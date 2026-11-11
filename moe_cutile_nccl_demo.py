@@ -10,7 +10,6 @@ This is a communication demo, not a full model: expert e computes ReLU(x * (e+1)
 import argparse
 import json
 import multiprocessing as mp
-import os
 import tempfile
 
 import cuda.tile as ct
@@ -19,10 +18,6 @@ import torch.distributed as dist
 import zmq
 
 TOP_K, HIDDEN, CAP = 2, 16, 8
-
-
-def log(role, message):
-    print(f"[{role}] {message}", flush=True)
 
 
 @ct.kernel
@@ -41,36 +36,24 @@ def address(root, kind, api):
 
 
 def worker(rank, pipe, root, dp, experts):
-    print(f"GPU worker {rank}: starting on CUDA device {rank}", flush=True)
     torch.cuda.set_device(rank)
     device = torch.device("cuda", rank)
-    print(f"GPU worker {rank}: initializing NCCL rank {rank}/{dp}", flush=True)
     dist.init_process_group("nccl", init_method=f"file://{root}/rendezvous",
                             rank=rank, world_size=dp)
-    print(f"GPU worker {rank}: NCCL initialized", flush=True)
 
     local_experts = list(range(rank, experts, dp))
     weights = (torch.tensor([e + 1 for e in local_experts],
                             device=device, dtype=torch.float32)
                .view(-1, 1).expand(-1, HIDDEN).contiguous())
-    print(f"GPU worker {rank}: pid={os.getpid()}, experts={local_experts}",
-          flush=True)
-
     try:
         while (tokens := pipe.recv()) is not None:
-            log(f"GPU {rank}", f"Pipe <- engine {rank}: tokens={tokens}")
             # Each rank sends CAP slots to each peer; unused slots are zero padded.
             send_x = torch.zeros((dp * CAP, HIDDEN), device=device)
             send_e = torch.full((dp * CAP,), -1, device=device, dtype=torch.int32)
             positions = torch.full((dp * CAP,), -1, device=device, dtype=torch.long)
             counts = [0] * dp
-            outgoing = [[] for _ in range(dp)]
-
             for pos, token in enumerate(tokens):
-                chosen = (token % experts, (token + 1) % experts)
-                log(f"GPU {rank}", f"route token[{pos}]={token} -> "
-                    f"experts={chosen}, owner GPUs={[e % dp for e in chosen]}")
-                for expert in chosen:
+                for expert in (token % experts, (token + 1) % experts):
                     owner = expert % dp
                     assert counts[owner] < CAP, "Increase CAP for larger batches"
                     slot = owner * CAP + counts[owner]
@@ -78,25 +61,10 @@ def worker(rank, pipe, root, dp, experts):
                     send_e[slot] = expert
                     positions[slot] = pos
                     counts[owner] += 1
-                    outgoing[owner].append(f"token[{pos}]={token}/E{expert}")
-
-            for peer, assignments in enumerate(outgoing):
-                log(f"GPU {rank}", f"NCCL dispatch -> GPU {peer}: {assignments}")
 
             recv_x, recv_e = torch.empty_like(send_x), torch.empty_like(send_e)
             dist.all_to_all_single(recv_x, send_x)
             dist.all_to_all_single(recv_e, send_e)
-
-            # Inspect received token/expert pairs, grouped by sending GPU.
-            received_tokens = recv_x[:, 0].cpu().tolist()
-            received_experts = recv_e.cpu().tolist()
-            for peer in range(dp):
-                slots = range(peer * CAP, (peer + 1) * CAP)
-                arrivals = [
-                    f"token={received_tokens[i]:g}/E{received_experts[i]}"
-                    for i in slots if received_experts[i] >= 0
-                ]
-                log(f"GPU {rank}", f"NCCL received <- GPU {peer}: {arrivals}")
 
             # cuTile executes this GPU's experts, including tokens from other APIs.
             processed = torch.empty_like(recv_x)
@@ -105,35 +73,32 @@ def worker(rank, pipe, root, dp, experts):
                       (recv_x, recv_e, weights, processed, dp, HIDDEN))
             torch.cuda.synchronize(device)
 
-            computed = processed[:, 0].cpu().tolist()
-            for peer in range(dp):
-                slots = range(peer * CAP, (peer + 1) * CAP)
-                details = [
-                    f"token={received_tokens[i]:g}, E{received_experts[i]} -> {computed[i]:g}"
-                    for i in slots if received_experts[i] >= 0
-                ]
-                log(f"GPU {rank}", f"cuTile experts for origin GPU {peer}: {details}")
-
             # NCCL returns each expert result to the rank owning its input.
             returned = torch.empty_like(processed)
             dist.all_to_all_single(returned, processed)
+            # Record actual returned expert outputs for a readable request trace.
             returned_values = returned[:, 0].cpu().tolist()
             original_positions = positions.cpu().tolist()
             original_experts = send_e.cpu().tolist()
-            for peer in range(dp):
-                slots = range(peer * CAP, (peer + 1) * CAP)
-                results = [
-                    f"token[{original_positions[i]}]/E{original_experts[i]}={returned_values[i]:g}"
-                    for i in slots if original_positions[i] >= 0
-                ]
-                log(f"GPU {rank}", f"NCCL combine <- GPU {peer}: {results}")
+            contributions = [[] for _ in tokens]
+            for slot, pos in enumerate(original_positions):
+                if pos >= 0:
+                    contributions[pos].append({
+                        "expert": original_experts[slot],
+                        "gpu": slot // CAP,
+                        "value": returned_values[slot],
+                    })
+            for pos, token in enumerate(tokens):
+                first = token % experts
+                contributions[pos].sort(
+                    key=lambda part: (part["expert"] - first) % experts
+                )
 
             output = torch.zeros((len(tokens), HIDDEN), device=device)
             valid = positions >= 0
             output.index_add_(0, positions[valid], returned[valid] / TOP_K)
             values = output[:, 0].cpu().tolist()
-            log(f"GPU {rank}", f"top-{TOP_K} averaged outputs={values} -> engine Pipe")
-            pipe.send(values)
+            pipe.send({"values": values, "contributions": contributions})
     finally:
         pipe.close()
         dist.destroy_process_group()
@@ -144,10 +109,8 @@ def engine(rank, root, dp, experts):
     gpu = mp.Process(target=worker, args=(rank, child, root, dp, experts))
     gpu.start()
     child.close()
-    print(f"engine {rank}: pid={os.getpid()}, worker={gpu.pid}", flush=True)
-
     ctx = zmq.Context()
-    poller, replies, sources = zmq.Poller(), {}, {}
+    poller, replies = zmq.Poller(), {}
     for api in range(dp):
         request = ctx.socket(zmq.DEALER)
         request.setsockopt(zmq.IDENTITY, str(rank).encode())
@@ -156,7 +119,6 @@ def engine(rank, root, dp, experts):
         result = ctx.socket(zmq.PUSH)
         result.connect(address(root, "results", api))
         replies[request] = result
-        sources[request] = api
         request.send(b"READY")
 
     try:
@@ -165,15 +127,9 @@ def engine(rank, root, dp, experts):
             raise TimeoutError("No API request")
         request = next(iter(events))
         batch = request.recv_json()
-        origin_api = sources[request]
-        log(f"ENGINE {rank}", f"ZMQ request <- API {origin_api}: "
-            f"id={batch['id']}, tokens={batch['tokens']}")
-        log(f"ENGINE {rank}", f"Pipe -> GPU worker {rank}: tokens={batch['tokens']}")
         parent.send(batch["tokens"])
-        values = parent.recv()
-        log(f"ENGINE {rank}", f"Pipe <- GPU worker {rank}: outputs={values}")
-        replies[request].send_json({"id": batch["id"], "values": values})
-        log(f"ENGINE {rank}", f"ZMQ result -> API {origin_api}: outputs={values}")
+        worker_result = parent.recv()
+        replies[request].send_json({"id": batch["id"], **worker_result})
     finally:
         try:
             parent.send(None)
@@ -187,7 +143,7 @@ def engine(rank, root, dp, experts):
         ctx.destroy(linger=0)
 
 
-def api_server(api, root, dp):
+def api_server(api, root, dp, results):
     ctx = zmq.Context()
     request = ctx.socket(zmq.ROUTER)
     request.bind(address(root, "requests", api))
@@ -200,18 +156,36 @@ def api_server(api, root, dp):
             identity, msg = request.recv_multipart()
             assert msg == b"READY"
             ready.add(identity)
-            log(f"API {api}", f"ZMQ READY <- engine {identity.decode()}")
-
         # Every API submits three distinct synthetic tokens to its own engine.
         tokens = [api * 3 + i for i in (1, 2, 3)]
-        log(f"API {api}", f"ZMQ request -> engine {api}: id={api}, tokens={tokens}")
         request.send_multipart([str(api).encode(),
                                 json.dumps({"id": api, "tokens": tokens}).encode()])
         response = result.recv_json()
-        log(f"API {api}", f"ZMQ result <- engine {api}: "
-            f"id={response['id']}, values={response['values']}")
+        results.put((api, tokens, response))
     finally:
         ctx.destroy(linger=0)
+
+
+def show_trace(api, tokens, response):
+    """Print one complete, ordered request trace after all processes finish."""
+    values = response["values"]
+    print(f"\n===== REQUEST {api} =====")
+    print(f"INPUT          API {api}: {tokens}")
+    print(f"1. ZMQ         API {api} -> Engine {api}")
+    print(f"2. Pipe        Engine {api} -> GPU {api}")
+    print("3. ROUTE / NCCL dispatch       (token -> expert on GPU)")
+    for token, parts in zip(tokens, response["contributions"]):
+        route = ", ".join(f"E{p['expert']}@GPU{p['gpu']}" for p in parts)
+        print(f"   token {token:<3} -> {route}")
+    print("4. cuTile / NCCL return        (expert result -> average)")
+    for token, parts, value in zip(tokens, response["contributions"], values):
+        details = " + ".join(
+            f"E{p['expert']}@GPU{p['gpu']}={p['value']:g}" for p in parts
+        )
+        print(f"   token {token:<3} <- {details} -> {value:g}")
+    print(f"5. Pipe        GPU {api} -> Engine {api}")
+    print(f"6. ZMQ         Engine {api} -> API {api}")
+    print(f"OUTPUT         API {api}: {values}")
 
 
 def main():
@@ -232,9 +206,10 @@ def main():
 
     mp.set_start_method("spawn")
     with tempfile.TemporaryDirectory(prefix="moe-nccl-") as root:
+        results = mp.SimpleQueue()
         processes = ([mp.Process(target=engine, args=(i, root, args.dp, args.experts))
                       for i in range(args.dp)]
-                     + [mp.Process(target=api_server, args=(i, root, args.dp))
+                     + [mp.Process(target=api_server, args=(i, root, args.dp, results))
                         for i in range(args.dp)])
         try:
             for p in processes:
@@ -243,6 +218,12 @@ def main():
                 p.join(timeout=180)
                 if p.exitcode != 0:
                     raise RuntimeError(f"Process {p.pid} failed (exitcode={p.exitcode})")
+            traces = {}
+            for _ in range(args.dp):
+                api, tokens, response = results.get()
+                traces[api] = (tokens, response)
+            for api in sorted(traces):
+                show_trace(api, *traces[api])
         finally:
             for p in processes:
                 if p.is_alive():
