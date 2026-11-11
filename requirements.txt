@@ -1,0 +1,5 @@
+# GPU MoE demo and Modal launcher (Python 3.11+)
+torch>=2.7
+pyzmq
+cuda-tile[tileiras]
+modal>=1.6.3
