@@ -13,7 +13,9 @@ app = modal.App("vllm-zmq-moe")
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    .pip_install("torch>=2.7", "pyzmq", "cuda-tile[tileiras]")
+    .pip_install_from_requirements(
+        str(Path(__file__).with_name("requirements.txt"))
+    )
     .add_local_file(
         str(Path(__file__).with_name("moe_cutile_nccl_demo.py")),
         "/app/moe_cutile_nccl_demo.py",
