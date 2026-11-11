@@ -1,12 +1,13 @@
-"""Two APIs -> two engines -> two GPU workers; MoE expert parallelism via NCCL.
+"""DP APIs -> DP engines -> DP GPU workers; MoE expert parallelism via NCCL.
 
-Requirements: 2 NVIDIA GPUs, CUDA PyTorch, pyzmq, cuda-tile.
-Run: CUDA_VISIBLE_DEVICES=0,1 python moe_cutile_nccl_demo.py
+Requirements: DP NVIDIA GPUs, CUDA PyTorch, pyzmq, cuda-tile.
+Run: CUDA_VISIBLE_DEVICES=0,1 python moe_cutile_nccl_demo.py --dp 2 --experts 5
 
-Each worker owns one GPU and two experts (TP=1, DP=EP=2).
+Each worker owns one GPU (TP=1, EP=DP) and experts with expert_id % DP == rank.
 This is a communication demo, not a full model: expert e computes ReLU(x * (e+1)).
 """
 
+import argparse
 import json
 import multiprocessing as mp
 import os
@@ -17,16 +18,15 @@ import torch
 import torch.distributed as dist
 import zmq
 
-DP, EXPERTS, TOP_K = 2, 4, 2
-PER_GPU, HIDDEN, CAP = EXPERTS // DP, 16, 8
+TOP_K, HIDDEN, CAP = 2, 16, 8
 
 
 @ct.kernel
 def expert_kernel(x, expert_ids, weights, out,
-                  base: ct.Constant[int], width: ct.Constant[int]):
+                  ep: ct.Constant[int], width: ct.Constant[int]):
     row = ct.bid(0)
     expert = ct.load(expert_ids, (row,), shape=())
-    local = ct.maximum(expert - base, 0)  # Padded entries have x=0.
+    local = ct.maximum(expert, 0) // ep  # Padded entries have x=0.
     values = ct.load(x, (row, 0), shape=(1, width))
     w = ct.load(weights, (local, 0), shape=(1, width))
     ct.store(out, (row, 0), ct.maximum(values * w, 0.0))
@@ -36,29 +36,30 @@ def address(root, kind, api):
     return f"ipc://{root}/{kind}-{api}"
 
 
-def worker(rank, pipe, root):
+def worker(rank, pipe, root, dp, experts):
     torch.cuda.set_device(rank)
     device = torch.device("cuda", rank)
     dist.init_process_group("nccl", init_method=f"file://{root}/rendezvous",
-                            rank=rank, world_size=DP)
+                            rank=rank, world_size=dp)
 
-    weights = (torch.arange(rank * PER_GPU + 1, (rank + 1) * PER_GPU + 1,
+    local_experts = list(range(rank, experts, dp))
+    weights = (torch.tensor([e + 1 for e in local_experts],
                             device=device, dtype=torch.float32)
-               .view(PER_GPU, 1).expand(PER_GPU, HIDDEN).contiguous())
-    print(f"GPU worker {rank}: pid={os.getpid()}, experts="
-          f"{list(range(rank * PER_GPU, (rank + 1) * PER_GPU))}", flush=True)
+               .view(-1, 1).expand(-1, HIDDEN).contiguous())
+    print(f"GPU worker {rank}: pid={os.getpid()}, experts={local_experts}",
+          flush=True)
 
     try:
         while (tokens := pipe.recv()) is not None:
             # Fixed capacity ensures that idle ranks join the same collectives.
-            send_x = torch.zeros((DP * CAP, HIDDEN), device=device)
-            send_e = torch.full((DP * CAP,), -1, device=device, dtype=torch.int32)
-            positions = torch.full((DP * CAP,), -1, device=device, dtype=torch.long)
-            counts = [0] * DP
+            send_x = torch.zeros((dp * CAP, HIDDEN), device=device)
+            send_e = torch.full((dp * CAP,), -1, device=device, dtype=torch.int32)
+            positions = torch.full((dp * CAP,), -1, device=device, dtype=torch.long)
+            counts = [0] * dp
 
             for pos, token in enumerate(tokens):
-                for expert in (token % EXPERTS, (token + 1) % EXPERTS):
-                    owner = expert // PER_GPU
+                for expert in (token % experts, (token + 1) % experts):
+                    owner = expert % dp
                     assert counts[owner] < CAP, "Increase CAP for larger batches"
                     slot = owner * CAP + counts[owner]
                     send_x[slot].fill_(float(token))
@@ -73,9 +74,9 @@ def worker(rank, pipe, root):
 
             # cuTile executes the experts owned by this GPU.
             processed = torch.empty_like(recv_x)
-            ct.launch(torch.cuda.current_stream(device), (DP * CAP, 1, 1),
+            ct.launch(torch.cuda.current_stream(device), (dp * CAP, 1, 1),
                       expert_kernel,
-                      (recv_x, recv_e, weights, processed, rank * PER_GPU, HIDDEN))
+                      (recv_x, recv_e, weights, processed, dp, HIDDEN))
             torch.cuda.synchronize(device)
 
             # NCCL combine: results return to the GPUs that sent each token.
@@ -90,16 +91,16 @@ def worker(rank, pipe, root):
         dist.destroy_process_group()
 
 
-def engine(rank, root):
+def engine(rank, root, dp, experts):
     parent, child = mp.Pipe()
-    gpu = mp.Process(target=worker, args=(rank, child, root))
+    gpu = mp.Process(target=worker, args=(rank, child, root, dp, experts))
     gpu.start()
     child.close()
     print(f"engine {rank}: pid={os.getpid()}, worker={gpu.pid}", flush=True)
 
     ctx = zmq.Context()
     poller, replies = zmq.Poller(), {}
-    for api in range(DP):
+    for api in range(dp):
         request = ctx.socket(zmq.DEALER)
         request.setsockopt(zmq.IDENTITY, str(rank).encode())
         request.connect(address(root, "requests", api))
@@ -130,7 +131,7 @@ def engine(rank, root):
         ctx.destroy(linger=0)
 
 
-def api_server(api, root):
+def api_server(api, root, dp):
     ctx = zmq.Context()
     request = ctx.socket(zmq.ROUTER)
     request.bind(address(root, "requests", api))
@@ -139,12 +140,12 @@ def api_server(api, root):
 
     try:
         ready = set()
-        while len(ready) < DP:
+        while len(ready) < dp:
             identity, msg = request.recv_multipart()
             assert msg == b"READY"
             ready.add(identity)
 
-        # Rank 1 has no tokens, yet participates in NCCL to serve rank 0.
+        # Idle ranks still participate in NCCL to serve rank 0.
         tokens = [1, 2, 3] if api == 0 else []
         request.send_multipart([str(api).encode(),
                                 json.dumps({"id": api, "tokens": tokens}).encode()])
@@ -153,14 +154,28 @@ def api_server(api, root):
         ctx.destroy(linger=0)
 
 
-if __name__ == "__main__":
-    if torch.cuda.device_count() < DP:
-        raise SystemExit("This example requires two visible NVIDIA GPUs")
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dp", type=int, default=2, help="Data/expert parallel ranks")
+    parser.add_argument("--experts", type=int, default=4, help="Total MoE experts")
+    args = parser.parse_args()
+
+    if args.dp < 1:
+        parser.error("--dp must be positive")
+    if args.experts <= args.dp:
+        parser.error("--experts must be greater than --dp")
+    visible = torch.cuda.device_count()
+    if visible != args.dp:
+        parser.error(f"--dp={args.dp} requires exactly {args.dp} visible GPUs; found {visible}")
+    print(f"DP={args.dp}, EP={args.dp}, GPUs={visible}, experts={args.experts}",
+          flush=True)
 
     mp.set_start_method("spawn")
     with tempfile.TemporaryDirectory(prefix="moe-nccl-") as root:
-        processes = ([mp.Process(target=engine, args=(i, root)) for i in range(DP)]
-                     + [mp.Process(target=api_server, args=(i, root)) for i in range(DP)])
+        processes = ([mp.Process(target=engine, args=(i, root, args.dp, args.experts))
+                      for i in range(args.dp)]
+                     + [mp.Process(target=api_server, args=(i, root, args.dp))
+                        for i in range(args.dp)])
         try:
             for p in processes:
                 p.start()
@@ -173,3 +188,7 @@ if __name__ == "__main__":
                 if p.is_alive():
                     p.terminate()
                     p.join()
+
+
+if __name__ == "__main__":
+    main()
