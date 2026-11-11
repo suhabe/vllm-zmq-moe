@@ -37,10 +37,13 @@ def address(root, kind, api):
 
 
 def worker(rank, pipe, root, dp, experts):
+    print(f"GPU worker {rank}: starting on CUDA device {rank}", flush=True)
     torch.cuda.set_device(rank)
     device = torch.device("cuda", rank)
+    print(f"GPU worker {rank}: initializing NCCL rank {rank}/{dp}", flush=True)
     dist.init_process_group("nccl", init_method=f"file://{root}/rendezvous",
                             rank=rank, world_size=dp)
+    print(f"GPU worker {rank}: NCCL initialized", flush=True)
 
     local_experts = list(range(rank, experts, dp))
     weights = (torch.tensor([e + 1 for e in local_experts],
