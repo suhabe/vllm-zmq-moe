@@ -21,6 +21,10 @@ import zmq
 TOP_K, HIDDEN, CAP = 2, 16, 8
 
 
+def log(role, message):
+    print(f"[{role}] {message}", flush=True)
+
+
 @ct.kernel
 def expert_kernel(x, expert_ids, weights, out,
                   ep: ct.Constant[int], width: ct.Constant[int]):
@@ -54,14 +58,19 @@ def worker(rank, pipe, root, dp, experts):
 
     try:
         while (tokens := pipe.recv()) is not None:
-            # Fixed capacity ensures that idle ranks join the same collectives.
+            log(f"GPU {rank}", f"Pipe <- engine {rank}: tokens={tokens}")
+            # Each rank sends CAP slots to each peer; unused slots are zero padded.
             send_x = torch.zeros((dp * CAP, HIDDEN), device=device)
             send_e = torch.full((dp * CAP,), -1, device=device, dtype=torch.int32)
             positions = torch.full((dp * CAP,), -1, device=device, dtype=torch.long)
             counts = [0] * dp
+            outgoing = [[] for _ in range(dp)]
 
             for pos, token in enumerate(tokens):
-                for expert in (token % experts, (token + 1) % experts):
+                chosen = (token % experts, (token + 1) % experts)
+                log(f"GPU {rank}", f"route token[{pos}]={token} -> "
+                    f"experts={chosen}, owner GPUs={[e % dp for e in chosen]}")
+                for expert in chosen:
                     owner = expert % dp
                     assert counts[owner] < CAP, "Increase CAP for larger batches"
                     slot = owner * CAP + counts[owner]
@@ -69,26 +78,62 @@ def worker(rank, pipe, root, dp, experts):
                     send_e[slot] = expert
                     positions[slot] = pos
                     counts[owner] += 1
+                    outgoing[owner].append(f"token[{pos}]={token}/E{expert}")
 
-            # NCCL dispatch: every GPU sends CAP rows to each GPU.
+            for peer, assignments in enumerate(outgoing):
+                log(f"GPU {rank}", f"NCCL dispatch -> GPU {peer}: {assignments}")
+
             recv_x, recv_e = torch.empty_like(send_x), torch.empty_like(send_e)
             dist.all_to_all_single(recv_x, send_x)
             dist.all_to_all_single(recv_e, send_e)
 
-            # cuTile executes the experts owned by this GPU.
+            # Inspect received token/expert pairs, grouped by sending GPU.
+            received_tokens = recv_x[:, 0].cpu().tolist()
+            received_experts = recv_e.cpu().tolist()
+            for peer in range(dp):
+                slots = range(peer * CAP, (peer + 1) * CAP)
+                arrivals = [
+                    f"token={received_tokens[i]:g}/E{received_experts[i]}"
+                    for i in slots if received_experts[i] >= 0
+                ]
+                log(f"GPU {rank}", f"NCCL received <- GPU {peer}: {arrivals}")
+
+            # cuTile executes this GPU's experts, including tokens from other APIs.
             processed = torch.empty_like(recv_x)
             ct.launch(torch.cuda.current_stream(device), (dp * CAP, 1, 1),
                       expert_kernel,
                       (recv_x, recv_e, weights, processed, dp, HIDDEN))
             torch.cuda.synchronize(device)
 
-            # NCCL combine: results return to the GPUs that sent each token.
+            computed = processed[:, 0].cpu().tolist()
+            for peer in range(dp):
+                slots = range(peer * CAP, (peer + 1) * CAP)
+                details = [
+                    f"token={received_tokens[i]:g}, E{received_experts[i]} -> {computed[i]:g}"
+                    for i in slots if received_experts[i] >= 0
+                ]
+                log(f"GPU {rank}", f"cuTile experts for origin GPU {peer}: {details}")
+
+            # NCCL returns each expert result to the rank owning its input.
             returned = torch.empty_like(processed)
             dist.all_to_all_single(returned, processed)
+            returned_values = returned[:, 0].cpu().tolist()
+            original_positions = positions.cpu().tolist()
+            original_experts = send_e.cpu().tolist()
+            for peer in range(dp):
+                slots = range(peer * CAP, (peer + 1) * CAP)
+                results = [
+                    f"token[{original_positions[i]}]/E{original_experts[i]}={returned_values[i]:g}"
+                    for i in slots if original_positions[i] >= 0
+                ]
+                log(f"GPU {rank}", f"NCCL combine <- GPU {peer}: {results}")
+
             output = torch.zeros((len(tokens), HIDDEN), device=device)
             valid = positions >= 0
             output.index_add_(0, positions[valid], returned[valid] / TOP_K)
-            pipe.send(output[:, 0].cpu().tolist())
+            values = output[:, 0].cpu().tolist()
+            log(f"GPU {rank}", f"top-{TOP_K} averaged outputs={values} -> engine Pipe")
+            pipe.send(values)
     finally:
         pipe.close()
         dist.destroy_process_group()
@@ -102,7 +147,7 @@ def engine(rank, root, dp, experts):
     print(f"engine {rank}: pid={os.getpid()}, worker={gpu.pid}", flush=True)
 
     ctx = zmq.Context()
-    poller, replies = zmq.Poller(), {}
+    poller, replies, sources = zmq.Poller(), {}, {}
     for api in range(dp):
         request = ctx.socket(zmq.DEALER)
         request.setsockopt(zmq.IDENTITY, str(rank).encode())
@@ -111,6 +156,7 @@ def engine(rank, root, dp, experts):
         result = ctx.socket(zmq.PUSH)
         result.connect(address(root, "results", api))
         replies[request] = result
+        sources[request] = api
         request.send(b"READY")
 
     try:
@@ -119,8 +165,15 @@ def engine(rank, root, dp, experts):
             raise TimeoutError("No API request")
         request = next(iter(events))
         batch = request.recv_json()
+        origin_api = sources[request]
+        log(f"ENGINE {rank}", f"ZMQ request <- API {origin_api}: "
+            f"id={batch['id']}, tokens={batch['tokens']}")
+        log(f"ENGINE {rank}", f"Pipe -> GPU worker {rank}: tokens={batch['tokens']}")
         parent.send(batch["tokens"])
-        replies[request].send_json({"id": batch["id"], "values": parent.recv()})
+        values = parent.recv()
+        log(f"ENGINE {rank}", f"Pipe <- GPU worker {rank}: outputs={values}")
+        replies[request].send_json({"id": batch["id"], "values": values})
+        log(f"ENGINE {rank}", f"ZMQ result -> API {origin_api}: outputs={values}")
     finally:
         try:
             parent.send(None)
@@ -147,12 +200,16 @@ def api_server(api, root, dp):
             identity, msg = request.recv_multipart()
             assert msg == b"READY"
             ready.add(identity)
+            log(f"API {api}", f"ZMQ READY <- engine {identity.decode()}")
 
-        # Idle ranks still participate in NCCL to serve rank 0.
-        tokens = [1, 2, 3] if api == 0 else []
+        # Every API submits three distinct synthetic tokens to its own engine.
+        tokens = [api * 3 + i for i in (1, 2, 3)]
+        log(f"API {api}", f"ZMQ request -> engine {api}: id={api}, tokens={tokens}")
         request.send_multipart([str(api).encode(),
                                 json.dumps({"id": api, "tokens": tokens}).encode()])
-        print(f"API {api}: {tokens} -> {result.recv_json()['values']}", flush=True)
+        response = result.recv_json()
+        log(f"API {api}", f"ZMQ result <- engine {api}: "
+            f"id={response['id']}, values={response['values']}")
     finally:
         ctx.destroy(linger=0)
 
