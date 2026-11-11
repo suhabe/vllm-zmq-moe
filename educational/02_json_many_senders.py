@@ -1,5 +1,9 @@
 """Two senders share one receiver; JSON and application request IDs.
 
+send_json() converts a dictionary to bytes, and recv_json() reconstructs it.
+Both senders connect to one PULL socket, so their messages arrive in one place.
+The id field identifies each message in our application; it does not route it.
+
 Terminal 1: python 02_json_many_senders.py receive
 Terminal 2: python 02_json_many_senders.py alice
 Terminal 3: python 02_json_many_senders.py bob

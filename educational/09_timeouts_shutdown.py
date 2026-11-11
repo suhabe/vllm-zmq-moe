@@ -1,5 +1,9 @@
 """A receive timeout and explicit cleanup; runs in one terminal.
 
+No sender connects, so recv() raises zmq.Again after the configured timeout.
+The finally block closes the socket before terminating its context.
+Using linger=0 allows close to discard queued outgoing messages rather than wait.
+
 Run: python 09_timeouts_shutdown.py
 """
 import zmq

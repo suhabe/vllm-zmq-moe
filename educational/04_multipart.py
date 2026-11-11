@@ -1,5 +1,9 @@
 """Several byte frames form ONE message; no routing involved yet.
 
+A frame is one byte sequence, and a multipart message groups several frames.
+recv_multipart() returns all frames of one message together as a list.
+Our API will later use this format to pair an engine address with a payload.
+
 Terminal 1: python 04_multipart.py receive
 Terminal 2: python 04_multipart.py send
 """

@@ -1,5 +1,9 @@
 """One engine, two APIs: replies[request_socket] selects the return path.
 
+The engine creates a separate request socket and result socket for each API.
+Its replies dictionary maps the socket receiving work to the correct return socket.
+ZMQ does not infer this relationship from the request id; our code chooses it.
+
 Terminal 1: python 08_multiple_apis.py 0
 Terminal 2: python 08_multiple_apis.py 1
 Terminal 3: python 08_multiple_apis.py engine

@@ -1,5 +1,9 @@
 """Wait for either of two sockets, rather than blocking on the wrong one.
 
+The engine has one receiving socket for each API and watches both with Poller.
+POLLIN means a socket has a message ready; recv_json() then reads that message.
+This lets one thread handle whichever API sends first without waiting on the other.
+
 Terminal 1: python 06_poller.py engine
 Terminal 2: python 06_poller.py 1
 Terminal 3: python 06_poller.py 0

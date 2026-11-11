@@ -289,6 +289,10 @@ retries or exactly-once execution.
 ```python
 """One message: Context, PUSH/PULL, bind/connect, send/recv.
 
+The receiver binds an address, and the sender connects to that same address.
+PUSH sends complete messages of bytes; PULL receives them one at a time.
+Sending queues a message, while recv() waits until a message is available.
+
 Terminal 1: python 01_bytes.py receive
 Terminal 2: python 01_bytes.py send
 """
@@ -311,6 +315,10 @@ with zmq.Context() as ctx:
 
 ```python
 """Two senders share one receiver; JSON and application request IDs.
+
+send_json() converts a dictionary to bytes, and recv_json() reconstructs it.
+Both senders connect to one PULL socket, so their messages arrive in one place.
+The id field identifies each message in our application; it does not route it.
 
 Terminal 1: python 02_json_many_senders.py receive
 Terminal 2: python 02_json_many_senders.py alice
@@ -338,6 +346,10 @@ with zmq.Context() as ctx:
 ```python
 """The same messaging pattern over a local IPC endpoint (Linux/macOS).
 
+An ipc:// address names a Unix socket path shared by processes on one machine.
+Both sides must use the same path, just as TCP peers must use the same port.
+Changing the transport leaves the PUSH/PULL messaging pattern unchanged.
+
 Terminal 1: python 03_ipc.py receive
 Terminal 2: python 03_ipc.py send
 """
@@ -363,6 +375,10 @@ with zmq.Context() as ctx:
 ```python
 """Several byte frames form ONE message; no routing involved yet.
 
+A frame is one byte sequence, and a multipart message groups several frames.
+recv_multipart() returns all frames of one message together as a list.
+Our API will later use this format to pair an engine address with a payload.
+
 Terminal 1: python 04_multipart.py receive
 Terminal 2: python 04_multipart.py send
 """
@@ -386,6 +402,10 @@ with zmq.Context() as ctx:
 
 ```python
 """Address engines explicitly; observe ROUTER adding/removing identity.
+
+Each DEALER names itself so the API's ROUTER can select a particular engine.
+ROUTER adds that identity when receiving and removes it when sending a payload.
+The API waits for our READY messages before sending work to both engines.
 
 Terminal 1: python 05_router_dealer.py api
 Terminal 2: python 05_router_dealer.py 0
@@ -422,6 +442,10 @@ with zmq.Context() as ctx:
 
 ```python
 """Wait for either of two sockets, rather than blocking on the wrong one.
+
+The engine has one receiving socket for each API and watches both with Poller.
+POLLIN means a socket has a message ready; recv_json() then reads that message.
+This lets one thread handle whichever API sends first without waiting on the other.
 
 Terminal 1: python 06_poller.py engine
 Terminal 2: python 06_poller.py 1
@@ -461,6 +485,10 @@ with zmq.Context() as ctx:
 ```python
 """Requests use ROUTER/DEALER; results use a separate PUSH/PULL channel.
 
+The API sends two requests before waiting for results on its separate PULL socket.
+The engine copies each request's id into its result so the API can match them.
+Separate channels are our design choice; ROUTER/DEALER can also carry replies.
+
 Terminal 1: python 07_separate_results.py api
 Terminal 2: python 07_separate_results.py engine
 """
@@ -497,6 +525,10 @@ with zmq.Context() as ctx:
 
 ```python
 """One engine, two APIs: replies[request_socket] selects the return path.
+
+The engine creates a separate request socket and result socket for each API.
+Its replies dictionary maps the socket receiving work to the correct return socket.
+ZMQ does not infer this relationship from the request id; our code chooses it.
 
 Terminal 1: python 08_multiple_apis.py 0
 Terminal 2: python 08_multiple_apis.py 1
@@ -545,6 +577,10 @@ with zmq.Context() as ctx:
 ```python
 """A receive timeout and explicit cleanup; runs in one terminal.
 
+No sender connects, so recv() raises zmq.Again after the configured timeout.
+The finally block closes the socket before terminating its context.
+Using linger=0 allows close to discard queued outgoing messages rather than wait.
+
 Run: python 09_timeouts_shutdown.py
 """
 import zmq
@@ -570,6 +606,10 @@ finally:
 
 ```python
 """Assemble the messaging: two APIs, two engines, one worker per engine.
+
+Each API can address either engine, and each engine polls requests from both APIs.
+Each engine passes work to its own worker through a Python Pipe, then returns results.
+The spawn method starts fresh processes that create their own ZMQ contexts and sockets.
 
 Run: python 10_process_tree.py
 Workers double numbers with Python so this ZMQ lesson needs no GPUs.

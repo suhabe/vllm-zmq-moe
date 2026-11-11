@@ -1,5 +1,9 @@
 """One message: Context, PUSH/PULL, bind/connect, send/recv.
 
+The receiver binds an address, and the sender connects to that same address.
+PUSH sends complete messages of bytes; PULL receives them one at a time.
+Sending queues a message, while recv() waits until a message is available.
+
 Terminal 1: python 01_bytes.py receive
 Terminal 2: python 01_bytes.py send
 """

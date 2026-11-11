@@ -1,5 +1,9 @@
 """Assemble the messaging: two APIs, two engines, one worker per engine.
 
+Each API can address either engine, and each engine polls requests from both APIs.
+Each engine passes work to its own worker through a Python Pipe, then returns results.
+The spawn method starts fresh processes that create their own ZMQ contexts and sockets.
+
 Run: python 10_process_tree.py
 Workers double numbers with Python so this ZMQ lesson needs no GPUs.
 """

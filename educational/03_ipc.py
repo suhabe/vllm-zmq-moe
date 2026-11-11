@@ -1,5 +1,9 @@
 """The same messaging pattern over a local IPC endpoint (Linux/macOS).
 
+An ipc:// address names a Unix socket path shared by processes on one machine.
+Both sides must use the same path, just as TCP peers must use the same port.
+Changing the transport leaves the PUSH/PULL messaging pattern unchanged.
+
 Terminal 1: python 03_ipc.py receive
 Terminal 2: python 03_ipc.py send
 """

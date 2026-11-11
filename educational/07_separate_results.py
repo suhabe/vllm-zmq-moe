@@ -1,5 +1,9 @@
 """Requests use ROUTER/DEALER; results use a separate PUSH/PULL channel.
 
+The API sends two requests before waiting for results on its separate PULL socket.
+The engine copies each request's id into its result so the API can match them.
+Separate channels are our design choice; ROUTER/DEALER can also carry replies.
+
 Terminal 1: python 07_separate_results.py api
 Terminal 2: python 07_separate_results.py engine
 """

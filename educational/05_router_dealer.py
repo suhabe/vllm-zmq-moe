@@ -1,5 +1,9 @@
 """Address engines explicitly; observe ROUTER adding/removing identity.
 
+Each DEALER names itself so the API's ROUTER can select a particular engine.
+ROUTER adds that identity when receiving and removes it when sending a payload.
+The API waits for our READY messages before sending work to both engines.
+
 Terminal 1: python 05_router_dealer.py api
 Terminal 2: python 05_router_dealer.py 0
 Terminal 3: python 05_router_dealer.py 1
