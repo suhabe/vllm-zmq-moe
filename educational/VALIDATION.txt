@@ -1,0 +1,6 @@
+Validation: all 10 scripts compile successfully on Python 3.12.
+PyZMQ 27.3.0 was installed for attempted runtime checks.
+End-to-end execution could not be verified in this sandbox:
+ZMQ TCP binding aborted with Operation not permitted in ip_resolver.cpp,
+and Unix IPC binding failed with Operation not permitted.
+No successful multiprocess runtime test is claimed.
