@@ -1,4 +1,4 @@
-"""Several byte frames form ONE message; no routing involved yet.
+"""Several byte frames form ONE message.
 
 A frame is one byte sequence, and a multipart message groups several frames.
 recv_multipart() returns all frames of one message together as a list.
@@ -21,3 +21,4 @@ with zmq.Context() as ctx:
         with ctx.socket(zmq.PUSH) as socket:
             socket.connect("tcp://127.0.0.1:5504")
             socket.send_multipart([b"header", b"body"])
+

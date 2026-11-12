@@ -6,6 +6,13 @@ Changing the transport leaves the PUSH/PULL messaging pattern unchanged.
 
 Terminal 1: python 03_ipc.py receive
 Terminal 2: python 03_ipc.py send
+
+When to choose IPC vs TCP:
+- Choose IPC for a local worker pool or daemon where all processes will stay
+on one host. Account for socket-directory access and OS path-length limits.
+- Choose TCP for distributed services, or when keeping the same addressing
+model between local development and deployment is useful. TCP also works
+locally; bind to 127.0.0.1 for loopback, while * binds all available interfaces.
 """
 import sys
 import zmq
