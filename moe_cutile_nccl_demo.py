@@ -26,14 +26,7 @@ CAPACITY_PER_PEER = 8
 
 
 @ct.kernel
-def expert_kernel(
-    inputs,
-    expert_ids,
-    weights,
-    output,
-    expert_parallel_size: ct.Constant[int],
-    width: ct.Constant[int],
-):
+def expert_kernel(inputs, expert_ids, weights, output, expert_parallel_size: ct.Constant[int], width: ct.Constant[int]):
     row = ct.bid(0)
     expert_id = ct.load(expert_ids, (row,), shape=())
 
@@ -56,12 +49,7 @@ def worker(rank, pipe, root, dp, experts):
     torch.cuda.set_device(rank)
     device = torch.device("cuda", rank)
 
-    dist.init_process_group(
-        "nccl",
-        init_method=f"file://{root}/rendezvous",
-        rank=rank,
-        world_size=dp,
-    )
+    dist.init_process_group("nccl", init_method=f"file://{root}/rendezvous", rank=rank, world_size=dp)
 
     local_expert_ids = list(range(rank, experts, dp))
     local_expert_scales = []
@@ -69,11 +57,7 @@ def worker(rank, pipe, root, dp, experts):
     for expert_id in local_expert_ids:
         local_expert_scales.append(expert_id + 1)
 
-    weights = torch.tensor(
-        local_expert_scales,
-        device=device,
-        dtype=torch.float32,
-    )
+    weights = torch.tensor(local_expert_scales, device=device, dtype=torch.float32)
     weights = weights.view(-1, 1)
     weights = weights.expand(-1, HIDDEN_SIZE)
     weights = weights.contiguous()
@@ -89,18 +73,8 @@ def worker(rank, pipe, root, dp, experts):
             # Unused slots keep their zero inputs and expert_id=-1.
             total_slots = dp * CAPACITY_PER_PEER
             send_inputs = torch.zeros((total_slots, HIDDEN_SIZE), device=device)
-            send_expert_ids = torch.full(
-                (total_slots,),
-                -1,
-                device=device,
-                dtype=torch.int32,
-            )
-            token_positions = torch.full(
-                (total_slots,),
-                -1,
-                device=device,
-                dtype=torch.long,
-            )
+            send_expert_ids = torch.full((total_slots,), -1, device=device, dtype=torch.int32)
+            token_positions = torch.full((total_slots,), -1, device=device, dtype=torch.long)
             slots_used_per_gpu = [0] * dp
 
             for token_position, token in enumerate(tokens):
@@ -110,9 +84,7 @@ def worker(rank, pipe, root, dp, experts):
                 for expert_id in (first_expert_id, second_expert_id):
                     owner_rank = expert_id % dp
                     slots_used = slots_used_per_gpu[owner_rank]
-                    assert slots_used < CAPACITY_PER_PEER, (
-                        "Increase CAPACITY_PER_PEER for larger batches"
-                    )
+                    assert slots_used < CAPACITY_PER_PEER, "Increase CAPACITY_PER_PEER for larger batches"
 
                     slot = owner_rank * CAPACITY_PER_PEER + slots_used
                     send_inputs[slot].fill_(float(token))
@@ -131,19 +103,7 @@ def worker(rank, pipe, root, dp, experts):
             # Run this GPU's experts, including tokens received from other APIs.
             processed_outputs = torch.empty_like(received_inputs)
 
-            ct.launch(
-                torch.cuda.current_stream(device),
-                (total_slots, 1, 1),
-                expert_kernel,
-                (
-                    received_inputs,
-                    received_expert_ids,
-                    weights,
-                    processed_outputs,
-                    dp,
-                    HIDDEN_SIZE,
-                ),
-            )
+            ct.launch(torch.cuda.current_stream(device), (total_slots, 1, 1), expert_kernel, (received_inputs, received_expert_ids, weights, processed_outputs, dp, HIDDEN_SIZE))
             torch.cuda.synchronize(device)
 
             # Return expert outputs to the GPU that supplied each input token.
@@ -174,18 +134,12 @@ def worker(rank, pipe, root, dp, experts):
             # Show each token's expert contributions in routing order.
             for token_position, token in enumerate(tokens):
                 first_expert_id = token % experts
-                contributions[token_position].sort(
-                    key=lambda part: (part["expert"] - first_expert_id) % experts
-                )
+                contributions[token_position].sort(key=lambda part: (part["expert"] - first_expert_id) % experts)
 
             # Average the two expert outputs for each original token.
             output = torch.zeros((len(tokens), HIDDEN_SIZE), device=device)
             valid_slots = token_positions >= 0
-            output.index_add_(
-                0,
-                token_positions[valid_slots],
-                returned_outputs[valid_slots] / TOP_K,
-            )
+            output.index_add_(0, token_positions[valid_slots], returned_outputs[valid_slots] / TOP_K)
 
             values = output[:, 0].cpu().tolist()
             pipe.send({"values": values, "contributions": contributions})
@@ -198,10 +152,7 @@ def worker(rank, pipe, root, dp, experts):
 def engine(rank, root, dp, experts):
     """Forward one API request to a GPU worker and send its response back."""
     engine_pipe, worker_pipe = mp.Pipe()
-    gpu_process = mp.Process(
-        target=worker,
-        args=(rank, worker_pipe, root, dp, experts),
-    )
+    gpu_process = mp.Process(target=worker, args=(rank, worker_pipe, root, dp, experts))
     gpu_process.start()
     worker_pipe.close()
 
@@ -343,15 +294,9 @@ def main():
     visible_gpus = torch.cuda.device_count()
 
     if visible_gpus != args.dp:
-        parser.error(
-            f"--dp={args.dp} requires exactly {args.dp} visible GPUs; "
-            f"found {visible_gpus}"
-        )
+        parser.error(f"--dp={args.dp} requires exactly {args.dp} visible GPUs; found {visible_gpus}")
 
-    print(
-        f"DP={args.dp}, EP={args.dp}, GPUs={visible_gpus}, experts={args.experts}",
-        flush=True,
-    )
+    print(f"DP={args.dp}, EP={args.dp}, GPUs={visible_gpus}, experts={args.experts}", flush=True)
 
     mp.set_start_method("spawn")
 
@@ -361,17 +306,11 @@ def main():
 
         # Create all engine processes first, then all API server processes.
         for rank in range(args.dp):
-            engine_process = mp.Process(
-                target=engine,
-                args=(rank, root, args.dp, args.experts),
-            )
+            engine_process = mp.Process(target=engine, args=(rank, root, args.dp, args.experts))
             processes.append(engine_process)
 
         for api in range(args.dp):
-            api_process = mp.Process(
-                target=api_server,
-                args=(api, root, args.dp, results),
-            )
+            api_process = mp.Process(target=api_server, args=(api, root, args.dp, results))
             processes.append(api_process)
 
         try:
@@ -382,9 +321,7 @@ def main():
                 process.join(timeout=180)
 
                 if process.exitcode != 0:
-                    raise RuntimeError(
-                        f"Process {process.pid} failed (exitcode={process.exitcode})"
-                    )
+                    raise RuntimeError(f"Process {process.pid} failed (exitcode={process.exitcode})")
 
             traces = {}
 
