@@ -1,18 +1,28 @@
-"""One message of bytes.
+"""Send one message.
 
 ZMQ concepts
 ------------
-A Context manages messaging resources and creates sockets. Socket types define
-behavior: PUSH sends complete byte messages; PULL receives them. bind() listens
-at an endpoint and connect() connects to it, independently of who sends.
-Connection setup happens in the background. send() queues data without confirming
-application processing; recv() waits for one complete message.
+To exchange messages, each program creates a socket: an object with send or
+receive methods. A PUSH socket sends; a PULL socket receives. A context is
+the ZeroMQ object used to create these sockets.
+
+The programs need an address where they can meet. One calls bind() to listen
+there; the other calls connect() to reach it.
+
+send() sends bytes, Python's representation of raw data. recv() waits for and
+returns one complete message. Sending puts data in a queue; it does not mean the
+other program has read it yet.
 
 This example
 ------------
-The receiver binds a PULL socket at tcp://127.0.0.1:5501. The sender connects a
-PUSH socket and sends b"hello". The receiver prints b'hello'. Default linger can
-keep shutdown waiting for queued data if the receiver has not connected yet.
+The receiver listens at tcp://127.0.0.1:5501 using PULL. The sender connects
+using PUSH and sends b"hello". This address keeps communication on your machine.
+
+The receiver prints b'hello'. The b means the value is bytes.
+
+You can also start the sender first. ZeroMQ connects in the background. With the
+default settings, the sender may wait during shutdown until a receiver connects;
+lesson 9 explains how to control that wait.
 
 Run in separate terminals:
 Terminal 1: python 01_bytes.py receive

@@ -1,20 +1,27 @@
-"""Wait for input from several sockets.
+"""Read whichever socket has a message.
 
 ZMQ concepts
 ------------
-A blocking receive waits on one socket even if another has data. A Poller waits
-for events across registered sockets. POLLIN indicates a message is ready;
-polling does not consume it, so a receive call follows. A poll timeout is in
-milliseconds. Application dictionaries can associate sockets with peer metadata.
+Calling recv() on one socket makes your program wait there, even if another
+socket already has a message. A Poller solves this by watching several sockets
+at once and telling your code which ones have something to read.
+
+Registering a socket with POLLIN means "watch this socket for incoming
+messages." poll() waits and reports the ready sockets. Your code then calls a
+receive method to read the messages. A timeout lets it stop waiting if nothing
+arrives.
 
 This example
 ------------
-The engine binds two PULL sockets, registers both, and maps them to API numbers
-in sources. It receives whichever API is ready and prints both messages. Start
-API 1 first to see it handled without waiting for API 0. A poll with no events
-for ten seconds raises TimeoutError. The full demo polls DEALERs the same way.
+The engine watches two PULL sockets, one for each API. Its sources dictionary
+records which API belongs to each socket. Each poll waits up to 10,000
+milliseconds, or ten seconds.
 
-Run in separate terminals; start both senders within ten seconds:
+Start both senders within ten seconds. The engine prints each API's number and
+message. Start API 1 first and briefly delay API 0: API 1's message can be read
+without waiting for API 0. If a poll times out, this program raises TimeoutError.
+
+Run in separate terminals:
 Terminal 1: python 06_poller.py engine
 Terminal 2: python 06_poller.py 1
 Terminal 3: python 06_poller.py 0

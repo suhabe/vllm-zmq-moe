@@ -1,26 +1,31 @@
-"""Address specific peers with ROUTER / DEALER.
+"""Choose which program receives work.
 
 ZMQ concepts
 ------------
-ROUTER and DEALER both send and receive without strict send/receive alternation.
-A ROUTER prepends the sender's routing identity on receive. On send, it consumes
-the first frame as the destination identity and forwards the remaining frames.
-An identity selects a peer connection, not an individual request. Peers need
-distinct identities at a given ROUTER; set an explicit identity before connect().
+When one program talks to several others, it needs a way to tell them apart.
+A ROUTER socket gives your code that choice. Each connected program has a
+name, called its identity. Received messages include the sender's identity.
+To send a message, your code supplies the recipient's identity and the message.
 
-A DEALER sends without a destination frame. With one connection, messages go
-there; with several, it distributes outgoing messages among available peers.
-When connected directly to a ROUTER it receives only the payload frames.
-A readiness handshake is an application protocol for learning a peer's route;
-READY and DONE are ordinary payloads, not built-in ZeroMQ commands.
+A DEALER socket can connect to the ROUTER and exchange messages with it. With
+just that one connection, the DEALER sends there without naming a recipient.
+Both socket types let your code send more messages before receiving a reply.
+
+Your programs can agree to send READY when they connect. Once the ROUTER
+receives it, your code knows that sender's identity and can address work to it.
+READY is a word your programs agree on; ZeroMQ gives it no special meaning.
 
 This example
 ------------
-The API binds a ROUTER. Two engines connect DEALERs with identities b"0" and b"1"
-and send READY. The API receives [identity, b"READY"] from each, then addresses
-work to engine 1 before engine 0 regardless of readiness order. Each engine
-receives its JSON payload and replies DONE. Terminal print order may vary.
-The handshake establishes request routes; it does not certify GPU worker setup.
+The API uses a ROUTER. Two engines use DEALERs and set their identities to
+b"0" and b"1" before connecting. Each sends READY. After hearing from both,
+the API sends work to engine 1, then engine 0. Each engine prints its work and
+sends back DONE. An engine is a separate program that handles work.
+
+Each engine receives a token list containing its own number. Printed order may
+vary. The ROUTER adds identity as the first frame when receiving and removes it
+when sending, so each engine receives only its work. Each engine needs a distinct
+identity. See README.md for the exact message parts.
 
 Run in separate terminals:
 Terminal 1: python 05_router_dealer.py api
