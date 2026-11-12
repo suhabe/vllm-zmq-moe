@@ -1,11 +1,24 @@
-"""Assemble the messaging: two APIs, two engines, one worker per engine.
+"""Assemble the API / engine / worker messaging.
 
-Each API can address either engine, and each engine polls requests from both APIs.
-Each engine passes work to its own worker through a Python Pipe, then returns results.
-The spawn method starts fresh processes that create their own ZMQ contexts and sockets.
+ZMQ concepts
+------------
+Each process creates its own context and sockets; pass configuration to children
+rather than socket objects. Sockets stay with their owning thread. ROUTER
+identities, polling, IPC transport, and separate result paths can be combined.
+Python's spawn starts fresh interpreters, and multiprocessing.Pipe connects a
+parent and child. Process creation, Pipes, and worker computation are not ZMQ
+features; stop messages are defined by the application.
 
-Run: python 10_process_tree.py
-Workers double numbers with Python so this ZMQ lesson needs no GPUs.
+This example
+------------
+Two APIs each bind a request ROUTER and result PULL. Two engines each connect a
+DEALER/PUSH pair to both APIs, send READY, and poll their request sockets. Every
+API sends one batch to each engine. Each engine passes tokens through a Python
+Pipe to its own worker, waits for doubled values, and returns them using the
+request-to-result socket map. Four results print in any interleaving. Each engine
+sends None through its Pipe to stop its worker. No GPUs are needed.
+
+Run in one terminal: python 10_process_tree.py
 """
 import json
 import multiprocessing as mp

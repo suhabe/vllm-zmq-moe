@@ -1,9 +1,18 @@
-"""Several byte frames form ONE message.
+"""Several byte frames in one message.
 
-A frame is one byte sequence, and a multipart message groups several frames.
-recv_multipart() returns all frames of one message together as a list.
-Our API will later use this format to pair an engine address with a payload.
+ZMQ concepts
+------------
+A frame is one byte sequence. A multipart message groups frames in order as one
+message; recv_multipart() returns its frames together as a list. The application
+or socket pattern assigns their meaning; arbitrary labels do not cause routing.
 
+This example
+------------
+The PUSH sender sends [b"header", b"body"] in one call. The PULL receiver prints
+[b'header', b'body']: one message with two frames. These labels are just data.
+Later lessons use multipart messages for a routing identity plus a payload.
+
+Run in separate terminals:
 Terminal 1: python 04_multipart.py receive
 Terminal 2: python 04_multipart.py send
 """
