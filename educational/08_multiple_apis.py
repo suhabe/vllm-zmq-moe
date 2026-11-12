@@ -1,9 +1,21 @@
-"""One engine, two APIs: replies[request_socket] selects the return path.
+"""Choose the return path for each API.
 
-The engine creates a separate request socket and result socket for each API.
-Its replies dictionary maps the socket receiving work to the correct return socket.
-ZMQ does not infer this relationship from the request id; our code chooses it.
+ZMQ concepts
+------------
+Separate request/result sockets need an application-defined relationship. A map
+from incoming socket to outgoing socket can choose the return path; ZeroMQ does
+not infer it from a request ID. One PUSH connected to several APIs distributes
+messages among them. A dedicated PUSH per API permits explicit path selection.
+Routing identities belong to each ROUTER's own set of peers.
 
+This example
+------------
+The engine connects one DEALER/PUSH pair per API and polls both DEALERs. Both use
+identity b"0", each at a different ROUTER. replies[request] maps the socket that
+received work to the correct result socket. API 0 receives id api-0 with values
+[0]; API 1 receives id api-1 with values [1]. The mapping chooses the destination.
+
+Run in separate terminals:
 Terminal 1: python 08_multiple_apis.py 0
 Terminal 2: python 08_multiple_apis.py 1
 Terminal 3: python 08_multiple_apis.py engine

@@ -1,10 +1,22 @@
-"""A receive timeout and explicit cleanup; runs in one terminal.
+"""Receive timeout and explicit cleanup.
 
-No sender connects, so recv() raises zmq.Again after the configured timeout.
-The finally block closes the socket before terminating its context.
-Using linger=0 allows close to discard queued outgoing messages rather than wait.
+ZMQ concepts
+------------
+RCVTIMEO limits each receive's wait in milliseconds; expiry raises zmq.Again.
+A poll timeout instead limits waiting for readiness. Linger controls pending
+outgoing messages at close: linger=0 discards them. It does not confirm delivery
+or stop peers. Close sockets before ctx.term(). ctx.destroy(linger=0) closes all
+context sockets and terminates it; do not use it with active sockets in other
+threads, because socket closure is not thread-safe.
 
-Run: python 09_timeouts_shutdown.py
+This example
+------------
+No sender connects to the PULL socket, so recv() times out after 100 ms and prints
+No message arrived within 100 ms. The finally block closes the socket before
+terminating its context. This PULL has no outgoing messages to discard, so the
+run illustrates cleanup syntax rather than demonstrating discarded sends.
+
+Run in one terminal: python 09_timeouts_shutdown.py
 """
 import zmq
 

@@ -1,18 +1,26 @@
-"""The same messaging pattern over a local IPC endpoint (Linux/macOS).
+"""Local IPC transport (Linux/macOS).
 
-An ipc:// address names a Unix socket path shared by processes on one machine.
-Both sides must use the same path, just as TCP peers must use the same port.
-Changing the transport leaves the PUSH/PULL messaging pattern unchanged.
+ZMQ concepts
+------------
+The transport is separate from the socket's messaging pattern. An ipc:// address
+names a Unix socket path shared by processes on one machine; tcp:// uses a host
+and port and also works across machines. Both peers must use the same endpoint.
+The IPC path is a socket endpoint, not a data file to read with open().
 
+Choose IPC for processes that stay on one host, accounting for directory access
+and OS path-length limits. Choose TCP for distributed services or a consistent
+addressing model between local development and deployment. TCP can use loopback
+(127.0.0.1); binding to * listens on all available interfaces.
+
+This example
+------------
+The receiver binds ipc:///tmp/zmq-lesson-03.sock and the sender connects there.
+PUSH/PULL works as before; string helpers encode and decode the payload. The
+receiver prints hello over IPC.
+
+Run in separate terminals:
 Terminal 1: python 03_ipc.py receive
 Terminal 2: python 03_ipc.py send
-
-When to choose IPC vs TCP:
-- Choose IPC for a local worker pool or daemon where all processes will stay
-on one host. Account for socket-directory access and OS path-length limits.
-- Choose TCP for distributed services, or when keeping the same addressing
-model between local development and deployment is useful. TCP also works
-locally; bind to 127.0.0.1 for loopback, while * binds all available interfaces.
 """
 import sys
 import zmq

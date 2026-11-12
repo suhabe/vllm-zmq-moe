@@ -1,9 +1,20 @@
-"""Wait for either of two sockets, rather than blocking on the wrong one.
+"""Wait for input from several sockets.
 
-The engine has one receiving socket for each API and watches both with Poller.
-POLLIN means a socket has a message ready; recv_json() then reads that message.
-This lets one thread handle whichever API sends first without waiting on the other.
+ZMQ concepts
+------------
+A blocking receive waits on one socket even if another has data. A Poller waits
+for events across registered sockets. POLLIN indicates a message is ready;
+polling does not consume it, so a receive call follows. A poll timeout is in
+milliseconds. Application dictionaries can associate sockets with peer metadata.
 
+This example
+------------
+The engine binds two PULL sockets, registers both, and maps them to API numbers
+in sources. It receives whichever API is ready and prints both messages. Start
+API 1 first to see it handled without waiting for API 0. A poll with no events
+for ten seconds raises TimeoutError. The full demo polls DEALERs the same way.
+
+Run in separate terminals; start both senders within ten seconds:
 Terminal 1: python 06_poller.py engine
 Terminal 2: python 06_poller.py 1
 Terminal 3: python 06_poller.py 0

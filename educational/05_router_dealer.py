@@ -1,32 +1,28 @@
-"""
-The ZeroMQ concept
+"""Address specific peers with ROUTER / DEALER.
 
-A ZeroMQ socket’s type determines how it handles messages. ROUTER and DEALER are two socket types; both can send and receive messages.
+ZMQ concepts
+------------
+ROUTER and DEALER both send and receive without strict send/receive alternation.
+A ROUTER prepends the sender's routing identity on receive. On send, it consumes
+the first frame as the destination identity and forwards the remaining frames.
+An identity selects a peer connection, not an individual request. Peers need
+distinct identities at a given ROUTER; set an explicit identity before connect().
 
-A ROUTER lets your code address messages to specific connected peers:
-
-When receiving, it adds the sender’s identity before the message body, so your code knows who sent it.
-
-When sending, your code supplies the recipient’s identity before the message body. The ROUTER uses that identity to choose the connection, then sends only the body.
-
-A DEALER lets your code send and receive messages without specifying a recipient for each message. If it has one connection, messages go there. If it has several connections, ZeroMQ distributes outgoing messages among them.
+A DEALER sends without a destination frame. With one connection, messages go
+there; with several, it distributes outgoing messages among available peers.
+When connected directly to a ROUTER it receives only the payload frames.
+A readiness handshake is an application protocol for learning a peer's route;
+READY and DONE are ordinary payloads, not built-in ZeroMQ commands.
 
 This example
+------------
+The API binds a ROUTER. Two engines connect DEALERs with identities b"0" and b"1"
+and send READY. The API receives [identity, b"READY"] from each, then addresses
+work to engine 1 before engine 0 regardless of readiness order. Each engine
+receives its JSON payload and replies DONE. Terminal print order may vary.
+The handshake establishes request routes; it does not certify GPU worker setup.
 
-Run one API process and two worker processes, called engines:
-
-The API uses a ROUTER socket.
-
-Each engine uses a DEALER socket connected to the API and sets its identity to "0" or "1".
-
-Each engine sends READY. The API receives the engine’s identity alongside that message—for example, [b"0", b"READY"].
-
-After both engines are ready, the API sends work to engine "1", then engine "0". It selects each engine by identity, regardless of which became ready first. Each engine receives only its work payload and replies with DONE.
-
-READY and DONE are messages defined by this example, not special ZeroMQ commands.
-
-Run each command in a separate terminal:
-
+Run in separate terminals:
 Terminal 1: python 05_router_dealer.py api
 Terminal 2: python 05_router_dealer.py 0
 Terminal 3: python 05_router_dealer.py 1

@@ -1,9 +1,20 @@
-"""Requests use ROUTER/DEALER; results use a separate PUSH/PULL channel.
+"""Separate channels for requests and results.
 
-The API sends two requests before waiting for results on its separate PULL socket.
-The engine copies each request's id into its result so the API can match them.
-Separate channels are our design choice; ROUTER/DEALER can also carry replies.
+ZMQ concepts
+------------
+Applications can send requests on ROUTER/DEALER and results on PUSH/PULL. Separate
+channels are a design choice; ROUTER/DEALER can also carry replies. Request IDs
+let application code associate results with outstanding requests. ZeroMQ neither
+performs that matching nor requires a result before another request is sent.
 
+This example
+------------
+The API binds a ROUTER and a PULL; the engine connects a DEALER and a PUSH.
+After READY, the API sends requests 100 and 101 before receiving either result.
+The engine echoes each request's tokens as values and copies its id into the
+result. The API prints both dictionaries; it does not implement an ID lookup.
+
+Run in separate terminals:
 Terminal 1: python 07_separate_results.py api
 Terminal 2: python 07_separate_results.py engine
 """

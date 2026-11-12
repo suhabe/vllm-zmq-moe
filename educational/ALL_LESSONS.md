@@ -3,6 +3,10 @@
 Ten small, independent programs. Read and run them in order. Each file contains
 all of its own code; there are no shared helpers hiding the ZMQ calls.
 
+Each lesson starts with **ZMQ concepts**, explained independently of the program.
+Then **This example** shows how the program applies those concepts, how to run it,
+and what to look for. The same split appears in each script's opening docstring.
+
 ## Setup
 
 Use Python 3.10+ on Linux or macOS. Lessons 3 and 10 use Unix IPC.
@@ -35,6 +39,26 @@ each lesson at a time. TCP addresses listen only on the local machine.
 
 ## 1. Send one message of bytes
 
+### ZMQ concepts
+
+A **context** manages ZeroMQ's messaging resources and creates **sockets**. A
+socket's type determines its messaging behavior: `PUSH` sends messages and `PULL`
+receives them. These peers communicate directly without an external broker.
+
+An **endpoint** is an address. `bind()` makes a socket listen at an endpoint;
+`connect()` asks a socket to connect to it. These roles do not determine which
+side sends: the socket type does that. Connection establishment happens in the
+background.
+
+ZeroMQ preserves message boundaries. `send()` accepts bytes, and `recv()` returns
+one complete message, waiting if none is available. A successful send queues data;
+it does not confirm that the receiving application has processed it.
+
+### This example
+
+The receiver creates a PULL socket and binds `tcp://127.0.0.1:5501`. The sender
+creates a PUSH socket, connects to that address, and sends the bytes `b"hello"`.
+
 ```bash
 # Terminal 1
 python 01_bytes.py receive
@@ -42,16 +66,31 @@ python 01_bytes.py receive
 python 01_bytes.py send
 ```
 
-The receiver prints `b'hello'`. `b` denotes bytes, the underlying message format.
-The context creates sockets. One side binds an address; the other connects to it.
-`PUSH` sends and `PULL` receives. You do not need an external message broker.
+The receiver prints `b'hello'`; the `b` marks a Python bytes value.
 
-Try starting the sender first, then the receiver. Connection establishment happens
-in the background. Sending queues a message; it does not prove the other program
-has processed it. This example keeps the default shutdown behavior, which can
-wait for queued outgoing messages to transfer if no receiver has connected yet.
+Try starting the sender first, then the receiver. This example keeps the default
+shutdown behavior, which can wait for queued outgoing messages to transfer if no
+receiver has connected yet. Lesson 9 explains that shutdown behavior.
 
 ## 2. Send JSON from two processes
+
+### ZMQ concepts
+
+ZeroMQ transports bytes. PyZMQ's `send_json()` serializes a JSON-compatible Python
+value into bytes; `recv_json()` decodes the received message back into a Python
+value. The fields inside that value are defined by the application.
+
+Several PUSH peers can connect to one PULL socket. That socket receives their
+messages through one receive interface; independent senders do not establish a
+single predictable order between their messages.
+
+An application can include an `id` field to label a message or correlate a result
+with a request. ZeroMQ does not interpret that field or use it to select a peer.
+
+### This example
+
+One receiver binds a PULL socket. Two senders, `alice` and `bob`, each send a
+dictionary containing their name as `id` and `[1, 2, 3]` as `tokens`.
 
 ```bash
 # Terminal 1
@@ -62,12 +101,32 @@ python 02_json_many_senders.py alice
 python 02_json_many_senders.py bob
 ```
 
-The receiver prints `alice [1, 2, 3]` and `bob [1, 2, 3]`; order may vary.
-One receiving socket accepts messages from both senders. JSON serialization turns
-a Python dictionary into bytes; `recv_json()` reconstructs it. The `id` field is
-ordinary application data, not a ZMQ routing identity.
+The receiver reads two messages and prints `alice [1, 2, 3]` and
+`bob [1, 2, 3]`; order may vary. These names are payload data. Lesson 5 introduces
+a separate kind of identity used for routing connections.
 
 ## 3. Change the transport to IPC
+
+### ZMQ concepts
+
+A **transport** carries messages between sockets. The messaging pattern, such as
+PUSH/PULL, is separate from the transport used to carry those messages.
+
+A `tcp://` endpoint uses a host and port. TCP works both across machines and
+locally; `127.0.0.1` limits a listener to loopback, while `*` binds all available
+interfaces. An `ipc://` endpoint names a Unix socket path for communication
+between processes on one machine. That path is a socket endpoint, not a data file
+to read with `open()`. Both peers must use the same endpoint.
+
+Choose IPC for processes that will stay on one host, accounting for directory
+permissions and OS path-length limits. Choose TCP for distributed services or to
+keep the same addressing model between local development and deployment.
+
+### This example
+
+The sender and receiver still use PUSH/PULL. They replace the TCP address from
+lesson 1 with `ipc:///tmp/zmq-lesson-03.sock` and send a string using PyZMQ's
+`send_string()` / `recv_string()` helpers.
 
 ```bash
 # Terminal 1
@@ -76,11 +135,28 @@ python 03_ipc.py receive
 python 03_ipc.py send
 ```
 
-The receiver prints `hello over IPC`. The pattern is unchanged; the address now
-names a local Unix socket path instead of a TCP host and port. The endpoint path
-is not a data file you read with `open()`. Both processes must use the same path.
+The receiver prints `hello over IPC`. Run this lesson on Linux or macOS. The
+messaging pattern stays the same even though the endpoint and transport change.
 
 ## 4. Send a multipart message
+
+### ZMQ concepts
+
+A **frame** is one byte sequence. A **multipart message** groups several frames
+into one message, preserving their order and boundaries.
+
+`send_multipart()` sends a list of frames as one message; `recv_multipart()` returns
+all of that message's frames as a list. Frames from separate messages are not
+interleaved. Keeping metadata and payload in separate frames avoids inventing a
+separator inside a single byte sequence.
+
+The application or socket pattern gives each frame its meaning. Arbitrary frame
+contents do not automatically become routing instructions.
+
+### This example
+
+The PUSH sender sends `[b"header", b"body"]` in one call. The PULL receiver reads
+both frames in one call.
 
 ```bash
 # Terminal 1
@@ -89,11 +165,39 @@ python 04_multipart.py receive
 python 04_multipart.py send
 ```
 
-The receiver prints `[b'header', b'body']`. These are two frames in one message,
-received together rather than as two independent messages. A frame is just one
-byte sequence. The labels `header` and `body` have no special meaning to ZMQ.
+The receiver prints `[b'header', b'body']`. The words `header` and `body` are just
+payload labels chosen here. Lesson 5 shows how a ROUTER gives the first frame a
+specific routing role.
 
 ## 5. Address an engine with ROUTER / DEALER
+
+### ZMQ concepts
+
+ROUTER and DEALER are bidirectional socket types. They allow repeated sends and
+receives without the strict send/receive alternation of REQ/REP.
+
+A **ROUTER** lets application code select a connected peer by its **routing
+identity**. On receive, it prepends the sender's identity as a frame. On send, it
+consumes the first frame as the destination identity and forwards the remaining
+frames to that peer. An identity selects a connection; it does not identify an
+individual request. Peers need distinct identities at a given ROUTER. Set an
+explicit DEALER identity before connecting.
+
+A **DEALER** sends without an explicit destination frame. With one connection,
+messages go there; with several, it distributes outgoing messages among available
+peers. When paired directly with a ROUTER, it receives the payload frames without
+the ROUTER's destination frame.
+
+A readiness handshake is an application protocol: a peer sends an agreed message
+so the receiver can learn its route before addressing work to it. Words such as
+`READY` and `DONE` have no built-in ZeroMQ meaning.
+
+### This example
+
+The API binds one ROUTER. Two engines connect DEALER sockets with identities
+`b"0"` and `b"1"`, then each sends `READY`. After receiving both, the API sends
+work to engine 1, then engine 0, selecting them by identity rather than readiness
+order. Each engine receives its JSON payload and sends `DONE` on the same socket.
 
 ```bash
 # Terminal 1
@@ -104,10 +208,6 @@ python 05_router_dealer.py 0
 python 05_router_dealer.py 1
 ```
 
-The API waits for both engines and deliberately sends to engine 1 before engine 0.
-Each engine prints its own rank in its received token list. Printed output across
-processes can interleave; send order does not control terminal print order.
-
 Watch the frame transformations:
 
 | Sender call | Receiver sees |
@@ -116,17 +216,31 @@ Watch the frame transformations:
 | ROUTER sends `[engine_identity, json_bytes]` | DEALER receives only `json_bytes` |
 | DEALER sends `b"DONE"` | ROUTER receives `[engine_identity, b"DONE"]` |
 
-The ROUTER prepends identity on receive and consumes identity on send. Identity
-selects a connected engine; it does not identify an individual request. Engines
-must have distinct identities at a given API's ROUTER. Set identity before connect.
-
-`READY` and `DONE` are words chosen by this program, not built-in ZMQ commands.
-This handshake establishes the engine's request route; it does not certify that a
-separate GPU worker has initialized. The READY handshake also avoids guessing
-connection readiness using sleeps. ROUTER/DEALER can send and receive repeatedly
-without the strict send/receive alternation of REQ/REP.
+Each engine prints its own rank in its received token list. Output across processes
+can interleave; send order does not control terminal print order. This handshake
+establishes each engine's request route. It does not certify that a separate GPU
+worker has initialized, and it avoids using sleeps to guess connection readiness.
 
 ## 6. Poll more than one socket
+
+### ZMQ concepts
+
+A blocking receive waits on one socket, even if another socket already has work.
+A **Poller** lets one thread wait for readiness on several registered sockets.
+
+Register a socket with `zmq.POLLIN` to watch for incoming messages. `poll()` returns
+socket/event pairs; `POLLIN` indicates that a message is ready to read. Polling does
+not consume it: a subsequent receive call does that. A poll timeout, expressed in
+milliseconds, limits that wait and returns no events when it expires.
+
+Application code can associate each socket object with metadata, such as which
+peer or service the connection represents.
+
+### This example
+
+The engine binds two PULL sockets, one per API, and registers both with a Poller.
+Its `sources` dictionary maps each receiving socket to its API number. The full
+demo later applies the same polling technique to DEALER sockets.
 
 ```bash
 # Terminal 1
@@ -137,19 +251,31 @@ python 06_poller.py 1
 python 06_poller.py 0
 ```
 
-Start both senders within ten seconds of starting the engine. The engine prints
-both APIs' messages. Start API 1 before API 0: the engine can receive API 1's work
-without waiting for API 0. If you delay the second sender, you can observe this.
-
-A blocking receive on socket 0 would wait there even if socket 1 had a message.
-`Poller` waits for any registered socket. `POLLIN` means a message is available.
-Polling does not read the message: `recv_json()` does that afterward.
-
-This lesson uses PULL sockets to isolate polling. The full demo applies the same
-polling technique to DEALER sockets. Each socket in `sources` is a Python socket
-object; the dictionary associates that connection with its API number.
+Start both senders within ten seconds of starting the engine. It prints both
+APIs' messages, reading each with `recv_json()` after polling reports readiness.
+Start API 1 first and briefly delay API 0 to see that API 1's message can be handled
+without waiting on API 0's socket. A poll with no events for ten seconds makes
+this program raise `TimeoutError`.
 
 ## 7. Separate request and result channels
+
+### ZMQ concepts
+
+An application can use separate sockets for requests and results. This is a
+protocol design choice: ROUTER/DEALER can also carry replies on the request
+connection, as in lesson 5. PUSH/PULL supplies a one-way path suitable for results.
+
+Having several requests **outstanding** means sending more work before collecting
+the earlier results. An application request ID allows each returned result to be
+associated with its request. The application must preserve and interpret that ID;
+ZeroMQ does not perform the matching.
+
+### This example
+
+The API binds a ROUTER for requests and a PULL for results. The engine connects a
+DEALER and a PUSH respectively, then sends `READY` on its request socket. The API
+sends requests 100 and 101 before reading either result. The engine copies each
+request's `id` and tokens into a result on the separate PUSH socket.
 
 ```bash
 # Terminal 1
@@ -158,15 +284,40 @@ python 07_separate_results.py api
 python 07_separate_results.py engine
 ```
 
-The API prints two result dictionaries with IDs 100 and 101. It sends both requests
-before receiving either result. Requests use ROUTER/DEALER; results use PUSH/PULL.
-The engine echoes the tokens so the communication remains the only new idea.
-
-Separate channels are a design choice, not a requirement of ROUTER/DEALER.
-Lesson 5 returned replies on the same connection. Request IDs let an application
-associate returned results with outstanding requests; ZMQ does not do that matching.
+The API prints two dictionaries with IDs 100 and 101 and values `[1, 2]`. The
+engine echoes the tokens to keep the focus on communication. The IDs make it
+possible to match results; this small program simply prints them.
 
 ## 8. Return results to the API that submitted the request
+
+### ZMQ concepts
+
+When results use a separate channel, application code must choose the return path.
+ZeroMQ does not infer a relationship between independently created request and
+result sockets, or use a payload's request ID to find the originating API.
+
+A mapping from incoming socket to outgoing socket can encode that relationship.
+A dedicated PUSH connection to each API gives the application control over where
+results go. A single PUSH connected to several APIs would distribute messages
+among them, rather than select the request's origin.
+
+Routing identities are local to a ROUTER's set of peers. A peer may use the same
+identity at separate ROUTER sockets without a conflict between those ROUTERs.
+
+### This example
+
+Two APIs each bind a ROUTER for requests and a PULL for results. The engine creates
+one DEALER/PUSH pair per API, registers both DEALERs with a Poller, and records
+the return socket for each request socket:
+
+```python
+replies[request] = result
+replies[request].send_json(...)
+```
+
+Both DEALERs use identity `b"0"`, each at a different API's ROUTER. When work
+arrives, the engine uses the receiving socket as the dictionary key to select the
+correct PUSH. This is the full demo's return-routing logic.
 
 ```bash
 # Terminal 1
@@ -178,52 +329,80 @@ python 08_multiple_apis.py engine
 ```
 
 API 0 receives ID `api-0` with values `[0]`; API 1 receives ID `api-1` with values
-`[1]`. The engine connects a separate DEALER and PUSH pair to each API.
-
-Focus on these two lines:
-
-```python
-replies[request] = result
-replies[request].send_json(...)
-```
-
-The dictionary maps the socket on which work arrived to the socket through which
-its answer must leave. This is the full demo's return-routing logic. ZMQ does not
-infer this mapping from the request ID. The same engine identity `b"0"` is valid
-at two different ROUTERs: each API has its own set of peers.
-
-Each PUSH socket connects to exactly one API. Connecting a single PUSH to both
-APIs would distribute messages among them, rather than select the request's origin.
+`[1]`. The request IDs label the results; the socket mapping chooses their return
+paths.
 
 ## 9. Understand a timeout and shutdown
+
+### ZMQ concepts
+
+By default, `recv()` waits indefinitely. `RCVTIMEO` sets a maximum wait in
+milliseconds for an individual receive. If no message arrives, PyZMQ raises
+`zmq.Again`, and the application decides how to respond. A Poller timeout instead
+limits the wait for readiness across registered sockets.
+
+**Linger** controls what happens to pending outgoing messages when a socket
+closes. `close(linger=0)` discards them instead of waiting for transfer. It does
+not acknowledge delivery or tell peers to exit. The default linger can leave
+context termination waiting for queued messages to transfer.
+
+Close sockets before calling `ctx.term()`. Alternatively, `ctx.destroy(linger=0)`
+closes the context's sockets and terminates the context, discarding pending sends.
+Use `destroy()` only when no sockets in that context are active in other threads;
+socket closure is not thread-safe.
+
+### This example
+
+One PULL socket binds an endpoint, sets `RCVTIMEO` to 100 ms, and deliberately has
+no sender. Its receive times out, the exception handler prints a message, and the
+`finally` block closes the socket before terminating the context.
 
 ```bash
 python 09_timeouts_shutdown.py
 ```
 
-It prints `No message arrived within 100 ms` and exits. There is deliberately no
-sender. A receive timeout raises `zmq.Again`; your application decides what to do.
-
-Default `recv()` waits indefinitely. `RCVTIMEO` limits an individual receive;
-the poll timeout in lesson 6 instead limits the wait for readiness across sockets.
-
-`close(linger=0)` discards any pending outgoing messages when closing. This PULL
-socket has none, but the same option matters for sending sockets. It does not
-acknowledge delivery or tell peers to exit. Close sockets before `ctx.term()`.
-`ctx.destroy(linger=0)`, used in our original demo, closes all context sockets and
-then terminates the context. Use it only when you own those sockets in this thread.
-The earlier lessons use context managers and default linger so queued messages
-are not deliberately discarded at normal shutdown.
+It prints `No message arrived within 100 ms` and exits. The PULL socket has no
+outgoing queue to discard, so the `linger=0` call illustrates cleanup syntax; this
+run does not demonstrate dropped outgoing messages. Earlier lessons use context
+managers and default linger so normal shutdown does not deliberately discard
+queued sends.
 
 ## 10. Assemble the process tree
+
+### ZMQ concepts
+
+A multiprocess application gives each process its own ZeroMQ context and sockets.
+Pass configuration such as endpoint paths and identities to child processes;
+create their sockets inside those processes. Sockets should also stay with their
+owning thread.
+
+The earlier concepts compose: ROUTER identities select peers, a Poller watches
+several input sockets, and an application mapping selects a separate result path.
+These mechanisms handle messaging; they do not launch processes or perform the
+workers' computation.
+
+Python's `multiprocessing` provides the other pieces here. `spawn` starts fresh
+interpreters, and a Python `Pipe` exchanges data between a parent and child.
+Neither is a ZeroMQ feature. A stop value sent through a Pipe is an application
+protocol, just as `READY` is on the ZeroMQ connections.
+
+### This example
+
+One command spawns two APIs and two engines; each engine spawns one worker.
+All API/engine pairs are connected over IPC. Each API binds one ROUTER for
+requests and one PULL for results. Each engine creates one DEALER/PUSH pair per
+API, polls its two request sockets, and maps each to the corresponding result
+socket.
+
+Each API waits for both engines' `READY` messages, then sends one batch to each
+engine. Each engine passes the tokens to its worker through a Python Pipe,
+waits for the doubled values, and returns a result to the originating API.
 
 ```bash
 python 10_process_tree.py
 ```
 
-This one command spawns two APIs and two engines; each engine spawns one worker.
-Every API sends one batch to each engine, so there are four results in any
-interleaving. The workers double the input values:
+There are four results, printed in any interleaving:
 
 | Request ID | Input tokens | Returned values |
 | --- | --- | --- |
@@ -232,19 +411,10 @@ interleaving. The workers double the input values:
 | api-1/engine-0 | [1, 0] | [2, 0] |
 | api-1/engine-1 | [1, 1] | [2, 2] |
 
-All API/engine pairs are connected. For each API there is one bound ROUTER for
-requests and one bound PULL for results. For each API, every engine creates one
-connecting DEALER and one connecting PUSH. Each engine therefore polls two
-request sockets and uses two corresponding result sockets.
-
 Read `api_server()`, then `engine()`, then `worker()`, then the main block.
-`spawn` starts fresh interpreters. Each child creates its own context and sockets;
-we pass ranks and endpoint paths to children, not ZMQ socket objects. Sockets
-should also stay with their owning thread.
-
-The engine/worker link uses a Python Pipe. `None` is this program's worker-stop
-message. These workers do ordinary Python arithmetic solely to keep the ZMQ lesson
-independent of GPU setup. The original cuTile/NCCL demo still uses GPU workers.
+The engine sends `None` through its Pipe to stop its worker and joins that process.
+The workers use ordinary Python arithmetic so this lesson needs no GPUs. The
+original cuTile/NCCL demo still uses GPU workers.
 
 ## Mapping back to the MoE demo
 
@@ -287,12 +457,23 @@ retries or exactly-once execution.
 ## 01_bytes.py
 
 ```python
-"""One message: Context, PUSH/PULL, bind/connect, send/recv.
+"""One message of bytes.
 
-The receiver binds an address, and the sender connects to that same address.
-PUSH sends complete messages of bytes; PULL receives them one at a time.
-Sending queues a message, while recv() waits until a message is available.
+ZMQ concepts
+------------
+A Context manages messaging resources and creates sockets. Socket types define
+behavior: PUSH sends complete byte messages; PULL receives them. bind() listens
+at an endpoint and connect() connects to it, independently of who sends.
+Connection setup happens in the background. send() queues data without confirming
+application processing; recv() waits for one complete message.
 
+This example
+------------
+The receiver binds a PULL socket at tcp://127.0.0.1:5501. The sender connects a
+PUSH socket and sends b"hello". The receiver prints b'hello'. Default linger can
+keep shutdown waiting for queued data if the receiver has not connected yet.
+
+Run in separate terminals:
 Terminal 1: python 01_bytes.py receive
 Terminal 2: python 01_bytes.py send
 """
@@ -314,12 +495,22 @@ with zmq.Context() as ctx:
 ## 02_json_many_senders.py
 
 ```python
-"""Two senders share one receiver; JSON and application request IDs.
+"""JSON messages from several senders.
 
-send_json() converts a dictionary to bytes, and recv_json() reconstructs it.
-Both senders connect to one PULL socket, so their messages arrive in one place.
-The id field identifies each message in our application; it does not route it.
+ZMQ concepts
+------------
+ZeroMQ transports bytes. PyZMQ's send_json() serializes JSON-compatible values;
+recv_json() reconstructs them. Several PUSH peers can send to one PULL socket.
+An id inside a JSON payload is application data, not a ZMQ routing identity;
+ZeroMQ does not interpret it or impose a fixed order between independent senders.
 
+This example
+------------
+Senders alice and bob connect to one receiver. Each sends a dictionary with its
+name as id and [1, 2, 3] as tokens. The receiver prints both names and token lists;
+the order may vary.
+
+Run in separate terminals:
 Terminal 1: python 02_json_many_senders.py receive
 Terminal 2: python 02_json_many_senders.py alice
 Terminal 3: python 02_json_many_senders.py bob
@@ -344,12 +535,27 @@ with zmq.Context() as ctx:
 ## 03_ipc.py
 
 ```python
-"""The same messaging pattern over a local IPC endpoint (Linux/macOS).
+"""Local IPC transport (Linux/macOS).
 
-An ipc:// address names a Unix socket path shared by processes on one machine.
-Both sides must use the same path, just as TCP peers must use the same port.
-Changing the transport leaves the PUSH/PULL messaging pattern unchanged.
+ZMQ concepts
+------------
+The transport is separate from the socket's messaging pattern. An ipc:// address
+names a Unix socket path shared by processes on one machine; tcp:// uses a host
+and port and also works across machines. Both peers must use the same endpoint.
+The IPC path is a socket endpoint, not a data file to read with open().
 
+Choose IPC for processes that stay on one host, accounting for directory access
+and OS path-length limits. Choose TCP for distributed services or a consistent
+addressing model between local development and deployment. TCP can use loopback
+(127.0.0.1); binding to * listens on all available interfaces.
+
+This example
+------------
+The receiver binds ipc:///tmp/zmq-lesson-03.sock and the sender connects there.
+PUSH/PULL works as before; string helpers encode and decode the payload. The
+receiver prints hello over IPC.
+
+Run in separate terminals:
 Terminal 1: python 03_ipc.py receive
 Terminal 2: python 03_ipc.py send
 """
@@ -373,12 +579,21 @@ with zmq.Context() as ctx:
 ## 04_multipart.py
 
 ```python
-"""Several byte frames form ONE message; no routing involved yet.
+"""Several byte frames in one message.
 
-A frame is one byte sequence, and a multipart message groups several frames.
-recv_multipart() returns all frames of one message together as a list.
-Our API will later use this format to pair an engine address with a payload.
+ZMQ concepts
+------------
+A frame is one byte sequence. A multipart message groups frames in order as one
+message; recv_multipart() returns its frames together as a list. The application
+or socket pattern assigns their meaning; arbitrary labels do not cause routing.
 
+This example
+------------
+The PUSH sender sends [b"header", b"body"] in one call. The PULL receiver prints
+[b'header', b'body']: one message with two frames. These labels are just data.
+Later lessons use multipart messages for a routing identity plus a payload.
+
+Run in separate terminals:
 Terminal 1: python 04_multipart.py receive
 Terminal 2: python 04_multipart.py send
 """
@@ -401,12 +616,31 @@ with zmq.Context() as ctx:
 ## 05_router_dealer.py
 
 ```python
-"""Address engines explicitly; observe ROUTER adding/removing identity.
+"""Address specific peers with ROUTER / DEALER.
 
-Each DEALER names itself so the API's ROUTER can select a particular engine.
-ROUTER adds that identity when receiving and removes it when sending a payload.
-The API waits for our READY messages before sending work to both engines.
+ZMQ concepts
+------------
+ROUTER and DEALER both send and receive without strict send/receive alternation.
+A ROUTER prepends the sender's routing identity on receive. On send, it consumes
+the first frame as the destination identity and forwards the remaining frames.
+An identity selects a peer connection, not an individual request. Peers need
+distinct identities at a given ROUTER; set an explicit identity before connect().
 
+A DEALER sends without a destination frame. With one connection, messages go
+there; with several, it distributes outgoing messages among available peers.
+When connected directly to a ROUTER it receives only the payload frames.
+A readiness handshake is an application protocol for learning a peer's route;
+READY and DONE are ordinary payloads, not built-in ZeroMQ commands.
+
+This example
+------------
+The API binds a ROUTER. Two engines connect DEALERs with identities b"0" and b"1"
+and send READY. The API receives [identity, b"READY"] from each, then addresses
+work to engine 1 before engine 0 regardless of readiness order. Each engine
+receives its JSON payload and replies DONE. Terminal print order may vary.
+The handshake establishes request routes; it does not certify GPU worker setup.
+
+Run in separate terminals:
 Terminal 1: python 05_router_dealer.py api
 Terminal 2: python 05_router_dealer.py 0
 Terminal 3: python 05_router_dealer.py 1
@@ -441,12 +675,23 @@ with zmq.Context() as ctx:
 ## 06_poller.py
 
 ```python
-"""Wait for either of two sockets, rather than blocking on the wrong one.
+"""Wait for input from several sockets.
 
-The engine has one receiving socket for each API and watches both with Poller.
-POLLIN means a socket has a message ready; recv_json() then reads that message.
-This lets one thread handle whichever API sends first without waiting on the other.
+ZMQ concepts
+------------
+A blocking receive waits on one socket even if another has data. A Poller waits
+for events across registered sockets. POLLIN indicates a message is ready;
+polling does not consume it, so a receive call follows. A poll timeout is in
+milliseconds. Application dictionaries can associate sockets with peer metadata.
 
+This example
+------------
+The engine binds two PULL sockets, registers both, and maps them to API numbers
+in sources. It receives whichever API is ready and prints both messages. Start
+API 1 first to see it handled without waiting for API 0. A poll with no events
+for ten seconds raises TimeoutError. The full demo polls DEALERs the same way.
+
+Run in separate terminals; start both senders within ten seconds:
 Terminal 1: python 06_poller.py engine
 Terminal 2: python 06_poller.py 1
 Terminal 3: python 06_poller.py 0
@@ -483,12 +728,23 @@ with zmq.Context() as ctx:
 ## 07_separate_results.py
 
 ```python
-"""Requests use ROUTER/DEALER; results use a separate PUSH/PULL channel.
+"""Separate channels for requests and results.
 
-The API sends two requests before waiting for results on its separate PULL socket.
-The engine copies each request's id into its result so the API can match them.
-Separate channels are our design choice; ROUTER/DEALER can also carry replies.
+ZMQ concepts
+------------
+Applications can send requests on ROUTER/DEALER and results on PUSH/PULL. Separate
+channels are a design choice; ROUTER/DEALER can also carry replies. Request IDs
+let application code associate results with outstanding requests. ZeroMQ neither
+performs that matching nor requires a result before another request is sent.
 
+This example
+------------
+The API binds a ROUTER and a PULL; the engine connects a DEALER and a PUSH.
+After READY, the API sends requests 100 and 101 before receiving either result.
+The engine echoes each request's tokens as values and copies its id into the
+result. The API prints both dictionaries; it does not implement an ID lookup.
+
+Run in separate terminals:
 Terminal 1: python 07_separate_results.py api
 Terminal 2: python 07_separate_results.py engine
 """
@@ -524,12 +780,24 @@ with zmq.Context() as ctx:
 ## 08_multiple_apis.py
 
 ```python
-"""One engine, two APIs: replies[request_socket] selects the return path.
+"""Choose the return path for each API.
 
-The engine creates a separate request socket and result socket for each API.
-Its replies dictionary maps the socket receiving work to the correct return socket.
-ZMQ does not infer this relationship from the request id; our code chooses it.
+ZMQ concepts
+------------
+Separate request/result sockets need an application-defined relationship. A map
+from incoming socket to outgoing socket can choose the return path; ZeroMQ does
+not infer it from a request ID. One PUSH connected to several APIs distributes
+messages among them. A dedicated PUSH per API permits explicit path selection.
+Routing identities belong to each ROUTER's own set of peers.
 
+This example
+------------
+The engine connects one DEALER/PUSH pair per API and polls both DEALERs. Both use
+identity b"0", each at a different ROUTER. replies[request] maps the socket that
+received work to the correct result socket. API 0 receives id api-0 with values
+[0]; API 1 receives id api-1 with values [1]. The mapping chooses the destination.
+
+Run in separate terminals:
 Terminal 1: python 08_multiple_apis.py 0
 Terminal 2: python 08_multiple_apis.py 1
 Terminal 3: python 08_multiple_apis.py engine
@@ -575,13 +843,25 @@ with zmq.Context() as ctx:
 ## 09_timeouts_shutdown.py
 
 ```python
-"""A receive timeout and explicit cleanup; runs in one terminal.
+"""Receive timeout and explicit cleanup.
 
-No sender connects, so recv() raises zmq.Again after the configured timeout.
-The finally block closes the socket before terminating its context.
-Using linger=0 allows close to discard queued outgoing messages rather than wait.
+ZMQ concepts
+------------
+RCVTIMEO limits each receive's wait in milliseconds; expiry raises zmq.Again.
+A poll timeout instead limits waiting for readiness. Linger controls pending
+outgoing messages at close: linger=0 discards them. It does not confirm delivery
+or stop peers. Close sockets before ctx.term(). ctx.destroy(linger=0) closes all
+context sockets and terminates it; do not use it with active sockets in other
+threads, because socket closure is not thread-safe.
 
-Run: python 09_timeouts_shutdown.py
+This example
+------------
+No sender connects to the PULL socket, so recv() times out after 100 ms and prints
+No message arrived within 100 ms. The finally block closes the socket before
+terminating its context. This PULL has no outgoing messages to discard, so the
+run illustrates cleanup syntax rather than demonstrating discarded sends.
+
+Run in one terminal: python 09_timeouts_shutdown.py
 """
 import zmq
 
@@ -605,14 +885,27 @@ finally:
 ## 10_process_tree.py
 
 ```python
-"""Assemble the messaging: two APIs, two engines, one worker per engine.
+"""Assemble the API / engine / worker messaging.
 
-Each API can address either engine, and each engine polls requests from both APIs.
-Each engine passes work to its own worker through a Python Pipe, then returns results.
-The spawn method starts fresh processes that create their own ZMQ contexts and sockets.
+ZMQ concepts
+------------
+Each process creates its own context and sockets; pass configuration to children
+rather than socket objects. Sockets stay with their owning thread. ROUTER
+identities, polling, IPC transport, and separate result paths can be combined.
+Python's spawn starts fresh interpreters, and multiprocessing.Pipe connects a
+parent and child. Process creation, Pipes, and worker computation are not ZMQ
+features; stop messages are defined by the application.
 
-Run: python 10_process_tree.py
-Workers double numbers with Python so this ZMQ lesson needs no GPUs.
+This example
+------------
+Two APIs each bind a request ROUTER and result PULL. Two engines each connect a
+DEALER/PUSH pair to both APIs, send READY, and poll their request sockets. Every
+API sends one batch to each engine. Each engine passes tokens through a Python
+Pipe to its own worker, waits for doubled values, and returns them using the
+request-to-result socket map. Four results print in any interleaving. Each engine
+sends None through its Pipe to stop its worker. No GPUs are needed.
+
+Run in one terminal: python 10_process_tree.py
 """
 import json
 import multiprocessing as mp

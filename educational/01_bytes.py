@@ -1,9 +1,20 @@
-"""One message: Context, PUSH/PULL, bind/connect, send/recv.
+"""One message of bytes.
 
-The receiver binds an address, and the sender connects to that same address.
-PUSH sends complete messages of bytes; PULL receives them one at a time.
-Sending queues a message, while recv() waits until a message is available.
+ZMQ concepts
+------------
+A Context manages messaging resources and creates sockets. Socket types define
+behavior: PUSH sends complete byte messages; PULL receives them. bind() listens
+at an endpoint and connect() connects to it, independently of who sends.
+Connection setup happens in the background. send() queues data without confirming
+application processing; recv() waits for one complete message.
 
+This example
+------------
+The receiver binds a PULL socket at tcp://127.0.0.1:5501. The sender connects a
+PUSH socket and sends b"hello". The receiver prints b'hello'. Default linger can
+keep shutdown waiting for queued data if the receiver has not connected yet.
+
+Run in separate terminals:
 Terminal 1: python 01_bytes.py receive
 Terminal 2: python 01_bytes.py send
 """
