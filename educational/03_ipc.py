@@ -1,22 +1,26 @@
-"""Local IPC transport (Linux/macOS).
+"""Use a local socket path.
 
 ZMQ concepts
 ------------
-The transport is separate from the socket's messaging pattern. An ipc:// address
-names a Unix socket path shared by processes on one machine; tcp:// uses a host
-and port and also works across machines. Both peers must use the same endpoint.
-The IPC path is a socket endpoint, not a data file to read with open().
+ZeroMQ can carry the same messages over different kinds of connections.
+A tcp:// address uses a host and port and can connect programs across machines.
+An ipc:// address uses a Unix socket path to connect programs on one machine.
+IPC means interprocess communication.
 
-Choose IPC for processes that stay on one host, accounting for directory access
-and OS path-length limits. Choose TCP for distributed services or a consistent
-addressing model between local development and deployment. TCP can use loopback
-(127.0.0.1); binding to * listens on all available interfaces.
+Changing the connection type does not change how PUSH and PULL work. Both
+programs still need to use the same address. An IPC path names a communication
+socket, not a file whose contents you read with open().
 
 This example
 ------------
-The receiver binds ipc:///tmp/zmq-lesson-03.sock and the sender connects there.
-PUSH/PULL works as before; string helpers encode and decode the payload. The
-receiver prints hello over IPC.
+The programs use ipc:///tmp/zmq-lesson-03.sock instead of a TCP address.
+send_string() and recv_string() handle converting between Python text and
+the bytes carried by ZeroMQ. Run this lesson on Linux or macOS.
+
+The receiver prints hello over IPC.
+
+Use IPC when the programs will stay on one machine; the socket directory must be
+accessible to them. Use TCP when they need to communicate across machines.
 
 Run in separate terminals:
 Terminal 1: python 03_ipc.py receive

@@ -1,17 +1,24 @@
-"""JSON messages from several senders.
+"""Send a dictionary from two programs.
 
 ZMQ concepts
 ------------
-ZeroMQ transports bytes. PyZMQ's send_json() serializes JSON-compatible values;
-recv_json() reconstructs them. Several PUSH peers can send to one PULL socket.
-An id inside a JSON payload is application data, not a ZMQ routing identity;
-ZeroMQ does not interpret it or impose a fixed order between independent senders.
+Messages often contain several pieces of information. JSON is a text format
+that can represent dictionaries, lists, numbers, and strings. send_json() turns
+such a value into a message; recv_json() turns it back into a Python value.
+
+One PULL socket can receive from several PUSH sockets. Each message arrives
+whole, but you should not rely on which sender's message arrives first.
+
+A field named id can help your code identify a message. You choose its meaning;
+ZeroMQ does not use JSON fields to decide where messages go.
 
 This example
 ------------
-Senders alice and bob connect to one receiver. Each sends a dictionary with its
-name as id and [1, 2, 3] as tokens. The receiver prints both names and token lists;
-the order may vary.
+Two senders, alice and bob, connect to one receiver. Each sends a dictionary
+containing its name as id and [1, 2, 3] as tokens. Here, tokens is simply
+the name we give a list of numbers.
+
+The receiver prints alice [1, 2, 3] and bob [1, 2, 3]. Their order may vary.
 
 Run in separate terminals:
 Terminal 1: python 02_json_many_senders.py receive

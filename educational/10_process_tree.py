@@ -1,22 +1,33 @@
-"""Assemble the API / engine / worker messaging.
+"""Put the programs together.
 
 ZMQ concepts
 ------------
-Each process creates its own context and sockets; pass configuration to children
-rather than socket objects. Sockets stay with their owning thread. ROUTER
-identities, polling, IPC transport, and separate result paths can be combined.
-Python's spawn starts fresh interpreters, and multiprocessing.Pipe connects a
-parent and child. Process creation, Pipes, and worker computation are not ZMQ
-features; stop messages are defined by the application.
+A process is a separately running Python program. Create a new ZeroMQ context
+and sockets inside each process that uses messaging. Pass addresses and settings
+to child processes so they can build their own connections. Keep each socket in
+the thread that created it.
+
+Python's multiprocessing library starts the processes. Its spawn option starts
+a fresh Python interpreter for each child. A Pipe is another Python facility:
+it lets a parent and child exchange values directly. It does not use ZeroMQ.
 
 This example
 ------------
-Two APIs each bind a request ROUTER and result PULL. Two engines each connect a
-DEALER/PUSH pair to both APIs, send READY, and poll their request sockets. Every
-API sends one batch to each engine. Each engine passes tokens through a Python
-Pipe to its own worker, waits for doubled values, and returns them using the
-request-to-result socket map. Four results print in any interleaving. Each engine
-sends None through its Pipe to stop its worker. No GPUs are needed.
+One command starts two APIs and two engines. Each engine also starts one worker.
+The roles are:
+
+- Each API sends one request to each engine using ROUTER.
+- Each engine watches a DEALER connection from each API using a Poller.
+- The engine sends the numbers to its worker over a Pipe and waits for the answer.
+- The worker doubles the numbers. The engine returns them through the PUSH socket
+  paired with the API that submitted the request.
+
+The API/engine connections use IPC. All computation uses ordinary Python; no GPU
+is needed.
+
+The APIs print four results, one for every API/engine pair. Values are twice the
+input numbers; output order may vary. Each engine sends None through its Pipe to
+stop its worker after the work is done. See README.md for all four results.
 
 Run in one terminal: python 10_process_tree.py
 """

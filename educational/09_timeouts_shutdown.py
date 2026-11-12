@@ -1,20 +1,30 @@
-"""Receive timeout and explicit cleanup.
+"""Stop waiting and close resources.
 
 ZMQ concepts
 ------------
-RCVTIMEO limits each receive's wait in milliseconds; expiry raises zmq.Again.
-A poll timeout instead limits waiting for readiness. Linger controls pending
-outgoing messages at close: linger=0 discards them. It does not confirm delivery
-or stop peers. Close sockets before ctx.term(). ctx.destroy(linger=0) closes all
-context sockets and terminates it; do not use it with active sockets in other
-threads, because socket closure is not thread-safe.
+A receive normally waits until a message arrives. Set RCVTIMEO to limit that
+wait in milliseconds. If time runs out, PyZMQ raises zmq.Again; your code can
+catch it and decide what to do next.
+
+At shutdown, ZeroMQ may still have outgoing messages waiting to be sent.
+Linger controls how long to keep trying to send them. Closing a socket with
+linger=0 discards those messages immediately. This can lose unsent data.
+
+Close your sockets first, then call ctx.term() to release the context's
+resources. Neither step tells other programs to exit.
 
 This example
 ------------
-No sender connects to the PULL socket, so recv() times out after 100 ms and prints
-No message arrived within 100 ms. The finally block closes the socket before
-terminating its context. This PULL has no outgoing messages to discard, so the
-run illustrates cleanup syntax rather than demonstrating discarded sends.
+One PULL socket waits for a message, but no sender connects. Its 100 ms timeout
+raises zmq.Again, which the program catches. The finally block closes the
+socket and then the context, even if receiving fails.
+
+The program prints No message arrived within 100 ms and exits.
+
+This receiving socket has no outgoing messages to discard. Its linger=0 call
+shows the cleanup syntax; the data-loss tradeoff matters for sending sockets.
+The commented alternative, ctx.destroy(linger=0), closes all sockets in the
+context before releasing it. Use that only when none are active in other threads.
 
 Run in one terminal: python 09_timeouts_shutdown.py
 """

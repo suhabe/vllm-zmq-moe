@@ -1,16 +1,22 @@
-"""Several byte frames in one message.
+"""Keep several parts in one message.
 
 ZMQ concepts
 ------------
-A frame is one byte sequence. A multipart message groups frames in order as one
-message; recv_multipart() returns its frames together as a list. The application
-or socket pattern assigns their meaning; arbitrary labels do not cause routing.
+Sometimes you want to send a label and some data together while keeping them
+separate. ZeroMQ calls each part a frame. Each frame contains bytes.
+
+send_multipart() sends a list of frames as one message. recv_multipart()
+returns that message's frames together, in the same order. The receiver does not
+have to guess where one part ends and the next begins.
 
 This example
 ------------
-The PUSH sender sends [b"header", b"body"] in one call. The PULL receiver prints
-[b'header', b'body']: one message with two frames. These labels are just data.
-Later lessons use multipart messages for a routing identity plus a payload.
+The sender sends [b"header", b"body"] through PUSH. The receiver reads both
+parts through PULL in one call. These words are just data chosen for this lesson;
+they have no special meaning to ZeroMQ.
+
+The receiver prints [b'header', b'body']: one message with two parts.
+The next lesson uses the first part to say who should receive a message.
 
 Run in separate terminals:
 Terminal 1: python 04_multipart.py receive

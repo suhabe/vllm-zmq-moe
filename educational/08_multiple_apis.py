@@ -1,19 +1,30 @@
-"""Choose the return path for each API.
+"""Send each result back to the right API.
 
 ZMQ concepts
 ------------
-Separate request/result sockets need an application-defined relationship. A map
-from incoming socket to outgoing socket can choose the return path; ZeroMQ does
-not infer it from a request ID. One PUSH connected to several APIs distributes
-messages among them. A dedicated PUSH per API permits explicit path selection.
-Routing identities belong to each ROUTER's own set of peers.
+When work arrives from several programs, each result must go back to the one
+that submitted it. With separate work and result connections, your code must
+remember which connections belong together.
+
+A dictionary can pair each receiving socket with the socket used to return its
+results. After reading work, look up the return socket and send there. A request
+ID labels the work; it does not tell ZeroMQ which connection to use.
 
 This example
 ------------
-The engine connects one DEALER/PUSH pair per API and polls both DEALERs. Both use
-identity b"0", each at a different ROUTER. replies[request] maps the socket that
-received work to the correct result socket. API 0 receives id api-0 with values
-[0]; API 1 receives id api-1 with values [1]. The mapping chooses the destination.
+The engine has one DEALER for receiving work and one PUSH for returning results
+to each API. It records each pair with replies[request] = result. When work
+arrives on request, replies[request].send_json(...) returns the answer to that
+API.
+
+Each PUSH connects to only one API. A single PUSH connected to both APIs would
+spread results between them without regard to who submitted the work.
+
+API 0 receives ID api-0 with values [0]; API 1 receives ID api-1 with values
+[1].
+
+Both DEALERs use identity b"0". That works because they connect to different
+ROUTERs: each ROUTER only needs to distinguish its own connected programs.
 
 Run in separate terminals:
 Terminal 1: python 08_multiple_apis.py 0
